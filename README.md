@@ -279,7 +279,7 @@ mentioned theories.</p>
   <b>BIBLIOGRAPHY</b></p>
 <table border="0" width="80%">
   <tr>
-    <td width="5%" valign="top"><img border="0" src="../../images/enflag.gif" width="20" height="19">
+    <td width="5%" valign="top">
     </td>
     <td width="95%">Book &quot;Building your Robot Drive Trains&quot;. Dennis
       Clark and Michael Owings. Ed. TAB Robotics. ISBN 0-007-140850-9. Chapter 8
@@ -287,14 +287,14 @@ mentioned theories.</p>
     </td>
   </tr>
   <tr>
-    <td width="5%" valign="top"><img border="0" src="../../images/enflag.gif" width="20" height="19">
+    <td width="5%" valign="top">
     </td>
     <td width="95%">Book &quot;Mobile Robots&quot;. Josephe L. Jones et al. Ed.
       A.K.Peters. ISBN 1-56881-097-0. Chapter 7; 7.8.2 - Feedback Control Loops
     </td>
   </tr>
   <tr>
-    <td width="5%" valign="top"><img border="0" src="../../images/enflag.gif" width="20" height="19">
+    <td width="5%" valign="top">
     </td>
     <td width="95%">PID Without a PhD (Easy guide to PID control algorithms and
       gains tuning)  :
@@ -302,14 +302,14 @@ mentioned theories.</p>
     </td>
   </tr>
   <tr>
-    <td width="5%" valign="top"><img border="0" src="../../images/enflag.gif" width="20" height="19">
+    <td width="5%" valign="top">
     </td>
     <td width="95%">Adjusting PID Gains: <a href="http://www.ctc-control.com/customer/elearning/servotut/adjus.asp" target="_blank"> http://www.ctc-control.com/customer/elearning/servotut/adjus.asp</a>
     </td>
   </tr>
   <tr>
-    <td width="5%" valign="top"><img border="0" src="../../images/spflag.gif" width="21" height="16"></td>
-    <td width="95%">Documentation of SkyPic control card: <a href="http://www.iearobotics.com/proyectos/skypic/skypic.html" target="_blank">http://www.iearobotics.com/proyectos/skypic/skypic.html</a>
+    <td width="5%" valign="top"></td>
+    <td width="95%">Documentation of SkyPic control card: <a href="http://www.iearobotics.com/wiki/index.php?title=Skypic" target="_blank">http://www.iearobotics.com/wiki/index.php?title=Skypic</a>
     </td>
   </tr>
 </table>
