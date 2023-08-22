@@ -1,0 +1,265 @@
+/*
+  Program: Motor v 2.0
+  by Alejandro Alonso-Puig
+  mundobot.com
+  May 2006
+
+  Motor speed control for CCS compiler.
+  Control a couple of DC motors with a PID algorithm. Could control the speed of both or each motor.
+  Use one PD controller per motor and an I controller to slave both motors.
+  Could receive and send information via RS232C. For more information go to www.mundobot.com
+
+*/
+
+/*
+	Hardware connections:
+
+	RA4	(IN)	Channel 1 from encoder of Right motor (counter register input)
+	RB0   (OUT)	Signal for change of direction of Right motor. Connect to E2 on Driver
+	RB1	(OUT)	Signal for change of direction of Left motor. Connect to E3 on Driver
+	RB2	(IN)	Channel 2 from encoder of Right motor
+	RB3	(IN)	Channel 1 from encoder of Left motor
+	RC0	(IN)	Channel 2 from encoder of Left motor (counter register input)
+	RC1   (OUT)	PWM Signal for Left motor. Connect to E4 on Driver
+	RC2   (OUT)	PWM Signal for Right motor. Connect to E1 on Driver
+	RC6			RS232
+	RC7			RS232
+*/
+
+#include <16F876.h>
+#device adc=8
+
+#FUSES NOWDT                 	//No Watch Dog Timer
+#FUSES XT                    	//Crystal osc <= 4mhz
+#FUSES PUT                   	//Power Up Timer
+#FUSES NOPROTECT             	//Code not protected from reading
+#FUSES BROWNOUT              	//Reset when brownout detected
+#FUSES NOLVP                 	//No low voltage prgming, B3(PIC16) or B5(PIC18) used for I/O
+#FUSES NOCPD                 	//No EE protection
+#FUSES NOWRT                 	//Program memory not write protected
+#FUSES NODEBUG               	//No Debug mode for ICD
+
+#use delay(clock=4000000)
+#use rs232(baud=9600,parity=N,xmit=PIN_C6,rcv=PIN_C7,bits=9)
+
+signed long	SetPoint=0,					//Speed set for Motors (tics)
+				CVRight=0, CVLeft=0,		//Control Variables for the motors
+				CV,							//Control Variable for intermediate calculations
+				PVRight=0, PVLeft=0,		//Process variables (feedback value)
+				Kpro=50,					   //Proportional constant (tenths)
+				Kint=1,						//Integral constant (tenths)
+				Kdif=40,					   //Derivative constant (tenths)
+				ErrRight=0, ErrLeft=0,		//Error values
+				LastErrRight, LastErrLeft, 	//Used for the Derivative part
+				ISum=0,						//Used for the Integral part
+				Bias=0,						//Allow steering
+				UnitDiv=50;					//Units division for internal calculations (This compiler doesn't use floating point)
+											//It affects the Kpro, Kint and Kdif values, so if we want for example a derivative
+											//constant of 0,3, Kdif should be 0,3 x UnitDiv
+char			Command, Value,				//For instructions received through serial port
+				Kpause=12;					//The period for reading the encoders (Milliseconds)
+int1 			DirRightFwd, DirLeftFwd,	//Used to identify the direction of the motors
+				SendFeedback=0;				//Used to identify if feedback values should be sent via RS232
+
+char			n;							//General purpose variable
+
+
+
+/////////// MOTOR CONTROL FUNCTIONS ///////////
+
+void SetPWM(long CVR, long CVL)
+//Sets the PWM values for both motors
+{
+		long Module;							//Used for internal calculations
+
+
+		//Right MOTOR -----------------
+
+		CVR=CVR/UnitDiv;						//Convert units
+
+		//Direction of rotation control
+		if (CVR>=0)	output_low(PIN_B0); 	//CW rotation
+		else
+		{
+			output_high(PIN_B0); 			//CCW rotation
+			CVR=255+CVR;						//obtain the negative PWM wave
+		}
+
+		//Set the PWM counter
+		set_pwm1_duty (CVR);
+
+
+		//Left MOTOR -----------------
+
+		CVL=CVL/UnitDiv;						//Convert units
+
+		//Direction of rotation control
+		if (CVL>=0) output_low(PIN_B1); 	//CW rotation
+		else
+		{
+			output_high(PIN_B1); 			//CCW rotation
+			CVL=255+CVL;						//obtain the negative PWM wave
+		}
+
+		//Set the PWM counter
+		set_pwm2_duty (CVL);
+}
+
+
+
+/////////// BODY ///////////
+
+void main()
+{
+
+   //Configure I/O ports
+   set_tris_a (0b00010000);		  //configure port A (See comments at header)
+   set_tris_b (0b00001100);		  //configure port B (See comments at header)
+   set_tris_c (0b10000001);		  //configure port C (See comments at header)
+   output_a(0);
+   output_b(0);
+
+   //Send bootup message via serial port
+   printf("\r\nMotor v2.0\r\n");
+   printf("May 2006. www.mundobot.com\r\n");
+   printf("\r\n");
+
+	//Configuration of counters for reading the encoders
+   setup_timer_0(RTCC_EXT_L_TO_H|RTCC_DIV_1);   //Right Motor encoder signal counter
+   setup_timer_1(T1_EXTERNAL|T1_DIV_BY_1);      //Left Motor encoder signal counter
+
+	//PWM generation configuration
+   setup_timer_2(T2_DIV_BY_1,99,1);             //10khz PWM signal
+   setup_ccp1(CCP_PWM);
+   setup_ccp2(CCP_PWM);
+   set_pwm1_duty (0);
+   set_pwm2_duty (0);
+
+	while(1) {	/////MAIN LOOP/////
+
+     	// Check Speed from encoders
+      set_timer0(0);							//Start measurement period TMR0
+      set_timer1(0);							//Start measurement period TMR1
+		delay_ms(Kpause);						//Allow timer to read pulses from encoder
+		PVRight=get_timer0();				//Read feedback Right encoder
+		PVLeft=make8(get_timer1(),0);		//Read feedback Left encoder
+
+		// Check direction from quadrature encoders
+		for (n=0; n<255;n++) if (!input(PIN_A4)) break;  //Channel 1 from encoder of Right motor (RA4)
+		for (n=0; n<255;n++) if (input(PIN_A4)) break;   //Channel 1 from encoder of Right motor (RA4)
+		if (input(PIN_B2)){                              //Channel 2 from encoder of Right motor (RB2)
+			DirRightFwd=0;
+			PVRight=-PVRight;}
+		else	DirRightFwd=1;
+
+		for (n=0; n<255;n++) if (!input(PIN_C0)) break;  //Channel 2 from encoder of Left motor (RC0)
+		for (n=0; n<255;n++) if (input(PIN_C0)) break;   //Channel 2 from encoder of Left motor (RC0)
+		if (input(PIN_B3)){                              //Channel 1 from encoder of Left motor (RB3)
+			DirLeftFwd=0;
+			PVLeft=-PVLeft;}
+		else	DirLeftFwd=1;
+
+		//Right Motor Feedback Speed Control
+		LastErrRight=ErrRight;
+		ErrRight=SetPoint-PVRight;
+		CVRight=CVRight + Kpro*ErrRight;					   //Proportional part
+		CVRight=CVRight + Kdif*(ErrRight-LastErrRight);	//Derivative part
+
+		//Left Motor Feedback Speed Control
+		LastErrLeft=ErrLeft;
+		ErrLeft=SetPoint-PVLeft;
+		CVLeft=CVLeft + Kpro*ErrLeft;						   //Proportional part
+		CVLeft=CVLeft + Kdif*(ErrLeft-LastErrLeft);		//Derivative part
+
+		//Integral Part
+		if (SetPoint>=0) 	  ISum=ISum + (PVRight-PVLeft) + Bias;
+		else				     ISum=ISum + (PVRight-PVLeft) - Bias;
+		CVRight=CVRight - Kint*ISum;
+		CVLeft=CVLeft + Kint*ISum;
+
+		//Limits control. Due to the PWM frecuency (10Khz), the maximum resolution
+		//allowed for the counter register by the micro is 8 bits (0-255). As we are
+		//working with units/UnitDiv, the limit then for CVRight & CVLeft are -255*UnitDiv...+255*UnitDiv
+		if (CVRight>(255*UnitDiv)) CVRight=255*UnitDiv;
+		if (CVRight<-(255*UnitDiv)) CVRight=-UnitDiv*255;
+		if (CVLeft>(255*UnitDiv)) CVLeft=255*UnitDiv;
+		if (CVLeft<-(255*UnitDiv)) CVLeft=-UnitDiv*255;
+
+      //Set new PWM values for motor
+//		SetPWM(CVRight, CVLeft);
+SetPWM(10000, 20000);
+      //Sends through serial port the feedback values
+		if (SendFeedback)
+		{
+			if (SetPoint >= 0) 	{printf("%Ld",SetPoint);}
+			else 				      {printf("-%Ld",-SetPoint);}
+			putc(9);
+			if (PVLeft >= 0) 	   {printf("%Ld",PVLeft);}
+			else 				      {printf("-%Ld",-PVLeft);}
+			putc(9);
+			if (PVRight >= 0) 	{printf("%Ld",PVRight);}
+			else 				      {printf("-%Ld",-PVRight);}
+			putc(9);
+			if (Kpro >= 0) 	   {printf("%Ld",Kpro);}
+			else 				      {printf("-%Ld",-Kpro);}
+			putc(9);
+			if (Kdif >= 0) 	   {printf("%Ld",Kdif);}
+			else 				      {printf("-%Ld",-Kdif);}
+			putc(9);
+			if (Kint >= 0) 	   {printf("%Ld",Kint);}
+			else 				      {printf("-%Ld",-Kint);}
+			putc(9);
+			if (Bias >= 0) 	   {printf("%Ld",Bias);}
+			else 				      {printf("-%Ld",-Bias);}
+			putc(9);
+			if (Kpause >= 0) 	   {printf("%d",Kpause);}
+			else 				      {printf("-%d",-Kpause);}
+			putc(13);
+			putc(10);
+		}
+		else delay_ms(20); //So in case info is transmitted or not, the time taken is the same.
+
+
+      //Check for commands from Serial Port
+      if(kbhit()) {
+         Command=getc();
+		   switch (Command) {
+			   case 32:	//Set Speed (" ")
+				  Value=getc();
+				  SetPoint=((int)Value-50)*10;
+				  break;
+			   case 33:	//Set Bias ("!")
+				  Value=getc();
+				  Bias=((int)Value-50)*10;
+				  break;
+			   case 34:	//Set Kpro (""")
+				  Value=getc();
+				  Kpro=((int)Value-50);
+				  break;
+			   case 35:	//Set Kint ("#")
+				  Value=getc();
+				  Kint=((int)Value-50);
+				  break;
+			   case 36:	//Set Kdif ("$")
+				  Value=getc();
+				  Kdif=((int)Value-50);
+				  break;
+			   case 37:	//Set Kpause ("%")
+				  Value=getc();
+				  Kpause=((int)Value-50);
+				  if (Kpause<0) Kpause=0;
+				  break;
+			   case 38:	//Ask for feedback values to be sent via serial port ("&")
+				  SendFeedback=1;
+				  break;
+			   case 39:	//Ask to stop sending feedback values ("'")
+				  SendFeedback=0;
+				  break;
+			   default:
+				  ;
+		    }
+      }
+   }
+
+
+}

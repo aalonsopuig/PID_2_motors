@@ -1,0 +1,40 @@
+[PROJECT]
+Target=motor2.HEX
+Development_Mode=
+Processor=0x876F
+ToolSuite=CCS
+
+[Directories]
+Include=C:\ARCHIVOS DE PROGRAMA\PICC\devices\;C:\ARCHIVOS DE PR
+Library=
+LinkerScript=
+
+[Target Data]
+FileList=C:\Mis documentos\Programas\CCS-Progs\Motor2\motor2.c
+BuildTool=C-COMPILER
+OptionString=+FM
+AdditionalOptionString=
+BuildRequired=1
+
+[motor2.c]
+Type=4
+Path=
+FileList=
+BuildTool=
+OptionString=
+AdditionalOptionString=
+
+[mru-list]
+1=motor2.c
+
+[Windows]
+0=0000 motor2.c 0 0 796 451 3 0
+
+[Opened Files]
+1=C:\Documents and Settings\Alejandro\Mis documentos\Robótica\Programas\CCS-Progs\Motor2\motor2.c
+2=
+
+[Units]
+Count=1
+1=C:\Mis documentos\Programas\CCS-Progs\Motor2\motor2.c (main)
+
