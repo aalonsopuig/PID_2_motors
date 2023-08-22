@@ -1,47 +1,16 @@
 <html>
 
 <head>
-<meta http-equiv="Content-Type" content="text/html; charset=windows-1252">
 <meta http-equiv="Content-Language" content="en-us">
 <meta name="GENERATOR" content="Microsoft FrontPage 4.0">
 <meta name="ProgId" content="FrontPage.Editor.Document">
-<title>mundobot.com</title>
-<script language="JavaScript" fptype="dynamicoutline">
 <!--
-function dynOutline() {}
-//-->
-</script>
-<script language="JavaScript1.2" fptype="dynamicoutline" src="outline.js">
-</script>
-<script language="JavaScript1.2" fptype="dynamicoutline" for="document" event="onreadystatechange()">
-<!--
-initOutline()
-//-->
-</script>
 </head>
 
-<body background="../../images/fons2.gif" onclick="dynOutline()">
-
-<blockquote>
-  <blockquote>
-    <blockquote>
-
-<table border="0" width="73%">
-  <tr>
-    <td width="69%"><font size="4"><b><i>PID control of two motors speed via serial
+<font size="4"><b><i>PID control of two motors speed via serial
       port</i></b></font>
       <p>By Alejandro Alonso-Puig<br>
       January 2.005<br>
-      <a href="http://mundobot.com">mundobot.com</a></p>
-    </td>
-    <td width="34%" valign="top">
-      <p align="center"><a href="../../projects/melanie/v3/ennewhisp.htm" target="_blank"><br>
-      </a></td>
-    <td width="48%" valign="top">
-      <p align="right"><a href="sppid.htm" target="_top"><img border="0" src="../../images/spanish.gif" width="98" height="65"></a>&nbsp;
-      <a href="enpid.htm"><img border="0" src="../../images/ukusa6.jpg"></a></td>
-  </tr>
-</table>
 <hr>
 <p align="justify"><br>
 The presented system is a feedback control loop of type PID (Proportional
@@ -349,7 +318,7 @@ mentioned theories.</p>
 
 <hr>
 
-<p align="right"><script>document.write('Actualizado (mes/día/año):  '+document.lastModified)</script></p>
+<p align="right"><script>document.write('Actualizado (mes/dÃ­a/aÃ±o):  '+document.lastModified)</script></p>
     </blockquote>
   </blockquote>
 </blockquote>
