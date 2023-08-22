@@ -1,0 +1,364 @@
+<html>
+
+<head>
+<meta http-equiv="Content-Language" content="es">
+<meta http-equiv="Content-Type" content="text/html; charset=windows-1252">
+<meta name="GENERATOR" content="Microsoft FrontPage 4.0">
+<meta name="ProgId" content="FrontPage.Editor.Document">
+<title>mundobot.com. Web de Robótica de Alejandro Alonso Puig</title>
+<script language="JavaScript" fptype="dynamicoutline">
+<!--
+function dynOutline() {}
+//-->
+</script>
+<script language="JavaScript1.2" fptype="dynamicoutline" src="outline.js">
+</script>
+<script language="JavaScript1.2" fptype="dynamicoutline" for="document" event="onreadystatechange()">
+<!--
+initOutline()
+//-->
+</script>
+</head>
+
+<body background="../../images/fons2.gif" onclick="dynOutline()">
+
+<blockquote>
+  <blockquote>
+    <blockquote>
+
+<table border="0" width="73%">
+  <tr>
+    <td width="95%"><font size="4"><b><i>Control PID de velocidad de dos motores por puerto
+      serie</i></b></font>
+      <p>Por Alejandro Alonso Puig<br>
+      Enero 2.005<br>
+      <a href="http://mundobot.com">mundobot.com</a></p>
+    </td>
+    <td width="8%" valign="top">
+      <p align="center"><a href="../../projects/melanie/v3/ennewhisp.htm" target="_blank"><br>
+      </a></td>
+    <td width="48%" valign="top">
+      <p align="right"><a href="sppid.htm" target="_top"><img border="0" src="../../images/spanish.gif" width="98" height="65"></a>&nbsp;
+      <a href="enpid.htm"><img border="0" src="../../images/ukusa6.jpg"></a></td>
+  </tr>
+</table>
+<hr>
+<p align="justify"><br>
+El sistema presentado es un control en bucle cerrado de tipo PID (Proporcional
+Integral Diferencial) que permite controlar la velocidad de dos motores
+(controles PD) y esclavizarlos (control I) para que ambos motores mantengan una
+relación de velocidad aún en el caso de que uno se vea forzado por agentes
+externos a variarla.&nbsp;</p>
+<p align="justify">Este sistema de control de motores es aplicable por ejemplo a
+robots con tracción de tipo diferencial. Simplemente se indica al sistema la
+velocidad deseada (<i>SetPoint</i>) y la diferencia de velocidad (<i>Bias</i>)
+que ha de haber entre ambos motores (para poder hacer giros). El sistema se
+ocupa de todo lo demás.</p>
+<p align="center"><img border="0" src="pid.png" width="588" height="335"></p>
+<p align="justify">El sistema es controlable mediante comandos que se envían
+por puerto serie. Es posible especificar no solo la velocidad y Bias, sino
+también las ganancias y otros parámetros varios que se verán más adelante.</p>
+<p align="justify">Adicionalmente el sistema permite obtener los valores de
+varios de sus parámetros vía puerto serie.</p>
+<p align="justify">&nbsp;</p>
+<p align="justify"><b>HARDWARE</b></p>
+<ul>
+  <li>
+    <p align="justify"><b>Motores</b>: Aunque el sistema es adaptable a
+    diferentes tipos de motores, los utilizados en el banco de pruebas y para
+    los que las ganancias PID están ajustadas por defecto en el programa son
+    los motores con reductora y encoder de <i><b>Solution Cubed</b></i>  (<a href="http://www.solutions-cubed.com" target="_blank">http://www.solutions-cubed.com</a>).
+    Características: 12V, 200RPM, 3,6kgcm de par, encoder incremental de doble
+    canal (detección del sentido de giro) de 200CPR, que tras la reductora
+    permite obtener 6000CPR.&nbsp;<br>
+    <i><u>Nota importante</u></i>: <i>El sistema está preparado para utilizar
+    encoders incrementales de doble canal. Si se utilizan encoders de canal
+    individual será necesario conectarlos a RA4 y RC0, poniendo RB2 y RB3 a
+    masa. No será posible controlar velocidades negativas (marcha atrás o giros
+    absolutos), obteniendo un resultado inestable del controlador en su intento.
+    En cualquier caso sería preferible hacer modificaciones en el código para
+    adaptarlo, ya que sino puede volverse inestable en valores cercanos a cero.<br>
+    <br>
+    </i></li>
+  <li>
+    <p align="justify"><b>Tarjeta de Control</b>: Se ha utilizado la tarjeta <i><b>Skypic</b></i>
+    de <b> IEARobotics</b> con un micro PIC16F876 (<a href="http://www.iearobotics.com/proyectos/skypic/skypic.html" target="_blank">http://www.iearobotics.com/proyectos/skypic/skypic.html</a>).
+    Dicha tarjeta lleva incorporado el adaptador de niveles TTL-RS232C para
+    poder conectarla al puerto serie de un PC y manejar el sistema desde la
+    aplicación hiperterminal o cualquiera similar.<br>
+    <br>
+  </li>
+  <li>
+    <p align="justify"><b>Driver de potencia</b>: Para poder dar la corriente
+    requerida por los motores se ha utilizado un driver MSE-A100 de Microsystems
+    Engineering (<a href="http://www.msebilbao.com" target="_blank">http://www.msebilbao.com</a>), basado en el chip L293B, que soporta
+    un par de motores con consumos de 1A continuo y 2A de pico cada uno.</li>
+</ul>
+<blockquote>
+<p align="justify"><img border="0" src="hardware.gif" width="585" height="239"></p>
+</blockquote>
+<p align="justify"><b>SOFTWARE</b></p>
+<p align="justify">El programa que se encuentra en el controlador se ha
+desarrollado en C++ mediante el compilador cruzado BoostC de Pavel Baranov (<a href="http://www.picant.com/c2c/c.html" target="_blank">http://www.picant.com/c2c/c.html</a>).
+Se han utilizado adicionalmente librerías para el control del puerto serie del
+microcontrolador, desarrolladas por Yann Hendrikx. El programa completo
+autoexplicativo puede descargarse en el link siguiente. Incluye tanto los
+fuentes en C, como el compilado &quot;motor.hex&quot; (listo para grabar en el
+microcontrolador) y la versión intermedia en ensamblador &quot;motor.asm&quot;
+generada por el compilador cruzado:</p>
+<ul>
+  <li>
+    <p align="justify">Programa se control <a href="motor.zip">motor.zip</a> <font size="1">(.ZIP
+    84Kb)</font></li>
+</ul>
+<p align="justify">Para el control desde el PC se utiliza simplemente una
+aplicación terminal, tal como el Hiperterminal, configurada en modo 9600,n,8,1</p>
+<p align="justify">Desde el hiperterminal se pueden enviar los comandos de
+control del sistema:</p>
+<div align="center">
+  <center>
+  <table border="1" width="68%" height="1386">
+    <tr>
+      <td width="20%" height="418" align="center"><b>Establecer velocidad</b></td>
+      <td width="80%" height="418">Se envía primero un byte de valor 32
+        (espacio). A continuación se envía la velocidad en el siguiente byte.
+        el valor 50 (carácter &quot;2&quot;) indica velocidad nula. Valores
+        inferiores corresponden a velocidad negativa (marcha atrás) y valores
+        mayores corresponden a velocidad positiva (marcha alante). El programa
+        toma el código enviado y lo multiplica por 10. Es decir, que la
+        velocidad (<i>SetPoint</i>) utilizada por el programa será&nbsp; <i>(código-50)*10</i>
+        <p>Dicha velocidad viene medida en ciclos de encoder por cada 10 msg
+        (parámetro <i>Kpause</i> en el programa). Así, dependiendo del encoder
+        utilizado, la velocidad puede variar. Para unos motores con encoder que
+        de <i>N</i> ciclos por revolución del eje (CPR) se tendría que para
+        obtener una velocidad de <i>V</i> revoluciones por minuto (RPM), la
+        velocidad (<i>SetPoint</i>) sería<i> </i>(<i>V * N* Kpause)/60.000 </i>por
+        lo que como <i>código=50+SetPoint/10</i> entonces, el código a enviar
+        sería <i>código=50+ V * N* Kpause/600.000</i></p>
+        <p>Así por ejemplo, para la configuración utilizada en el banco de
+        pruebas, donde N=6.000CPR y <i>Kpause</i>=10, para que los motores fuesen a
+        100RPM habría que enviar el código de velocidad
+        50+100*6000*10/600.000=60 (carácter &quot;&lt;&quot; de la tabla
+        ASCII).&nbsp;</p>
+        <p>En resumen, pulsando la tecla espaciadora y luego la tecla
+        &quot;&lt;&quot; se pondría el motor a 100RPM positivas.</p>
+      </td>
+    </tr>
+    <tr>
+      <td width="20%" height="475" align="center"><b>Cambiar el valor por defecto de
+        <i> Kpause</i></b>&nbsp;</td>
+      <td width="80%" height="475">El valor por defecto de <i> Kpause</i> se puede
+        modificar enviando primero el código 37 (carácter % en la tabla ASCII) y
+        luego el valor, considerando que el valor 50 corresponde a un <i> Kpause</i>
+        nulo. Así, se asigna a <i> Kpause</i> el valor que se envíe restándole 50.
+        Por ejemplo, si se envía el código 60 (carácter &quot;&lt;&quot; de
+        la tabla ASCII), <i> Kpause</i> será 10 (60-50). Si se envían valores menores
+        que 50, <i> Kpause</i> se hará nulo.
+        <p>Puede ser necesario modificar <i> Kpause</i> dependiendo de las CPR del
+        encoder utilizado. El programa utiliza internamente un registro de 8
+        bits para cada motor, que cuenta los ciclos procedentes del encoder. Si
+        lar CPR del encoder son muy altas y <i> Kpause</i> es también alto, se podrían
+        producir desbordamientos de los registros falseando las medidas de
+        velocidad. Por ello <i> Kpause</i> ha de tener un valor (en msg) tal que el
+        motor a máxima velocidad no produzca más de 255 ciclos de encoder. Por
+        ejemplo, para un motor de velocidad máxima <i>V</i> revoluciones por
+        minuto (RPM) en el eje y encoder que de <i>N</i> ciclos por revolución
+        del eje (CPR), el valor de <i>Kpause</i> no debe ser superior a <i>(60.000*255)/(V*N)</i></p>
+        <p>Así por ejemplo, para la configuración utilizada en el banco de
+        pruebas, donde N=6.000CPR y V=200RPM, el valor de <i> Kpause</i> debiera ser
+        inferior a (60.000* 255)/(200*6.000) = 12'75. <i> Kpause</i> es un numero de un
+        byte, así que sería 12 como máximo.</p>
+        <p>En resumen, para establecer un <i> Kpause</i> de 20, se pulsaría la tecla %
+        (código 37) y luego la tecla F (código 70)</p>
+      </td>
+    </tr>
+    <tr>
+      <td width="20%" height="133" align="center"><b><i>Bias</i></b></td>
+      <td width="80%" height="133">El valor del <i>Bias</i> indica la velocidad
+        relativa del motor izquierdo respecto del motor derecho. Un Bias
+        positivo hace que el motor izquierdo vaya más rápido que motor derecho
+        y un <i> Bias</i> negativo hace lo contrario. Básicamente para una velocidad
+        establecida (<i>SetPoint</i>), la velocidad de los motores serán:
+        <p><i>Vi =SetPoint + Bias/2<br>
+        Vd =SetPoint - Bias/2</i></p>
+      </td>
+    </tr>
+    <tr>
+      <td width="20%" height="266" align="center"><b>Ganancias</b> &nbsp;</td>
+      <td width="80%" height="266">Para variar las ganancias por defecto del
+        controlador PID, primero hay que enviar un código que indique la
+        ganancia a variar:
+        <ul>
+          <li>Código 34 (carácter comilla doble (&quot;) de la tabla ASCII)
+            para la ganancia Proporcional (<i>Kpro</i>)</li>
+          <li>Código 35 (carácter almohadilla (#) de la tabla ASCII) para la
+            ganancia Integral (<i>Kint</i>)</li>
+          <li>Código 36 (carácter dollar ($) de la tabla ASCII) para la
+            ganancia Diferencial (<i>Kdif</i>)</li>
+        </ul>
+        <p>Tras este código se envía el valor de la ganancia en unidades de
+        1/50, empezando en el código 50 (código 50 indica ganancia 0). Así
+        por ejemplo, para establecer una ganancia <i> Kint</i> de 0,02 se enviaría
+        primero el código 35 y luego el código 0,02*50+50 = 51</p>
+      </td>
+    </tr>
+    <tr>
+      <td width="20%" height="39" align="center"><b>Petición de datos&nbsp;</b></td>
+      <td width="80%" height="39">Enviando el código 38 (carácter &amp; en la
+        tabla ASCII) se activa la petición de datos y enviando el código 39
+        (carácter ' en la tabla ASCII) se desactiva la petición de datos.
+        <p>Al activar la petición de datos el controlador empieza a enviar por
+        puerto serie de forma continua los siguientes valores de control del
+        sistema:&nbsp;</p>
+        <ul>
+          <li><i>SetPoint</i>: Velocidad de referencia</li>
+          <li><i>PVLeft</i>: velocidad real según encoder del motor izquierdo</li>
+          <li><i>PVRight</i>: velocidad real según encoder del motor derecho</li>
+          <li><i>Kpro</i>: Ganancia proporcional en unidades de 1/50, es decir que si
+            muestra 20, la ganancia real usada es 20/50=0,4</li>
+          <li><i>Kdif</i>: Ganancia diferencial en unidades de 1/50</li>
+          <li><i>Kint</i>: Ganancia integral en unidades de 1/50</li>
+          <li><i>Bias</i></li>
+          <li><i>Kpause</i></li>
+        </ul>
+        <p>A continuación se mostrará la utilidad de obtener estos datos en el
+        ordenador para ver el comportamiento del sistema y ajustar adecuadamente
+        las ganancias.</p>
+      </td>
+    </tr>
+  </table>
+  </center>
+</div>
+<p align="justify"><i>Nota: Las unidades utilizadas son algo liosas, pero ha
+sido necesario hacerlo así para adecuar el programa a las limitaciones del
+compilador, entre las que se encuentra la ausencia de variables de coma flotante
+y la limitación en cuanto al tamaño de los enteros a valores de 16 bits.</i></p>
+<p align="justify">Activando la petición de datos se obtienen continuamente los
+datos de funcionamiento del sistema de control. Esto permite alimentar
+aplicaciones en el PC para tener información permanente del sistema y llevar
+los ajustes oportunos.&nbsp;</p>
+<p align="justify">A continuación se muestra un método utilizado para ajustar
+de forma manual las ganancias del controlador.</p>
+<p align="justify">El método consiste en mantener el motor parado, pero
+enviarle los valores de <i>Kpro</i>, <i> Kint</i> y <i> Kdif</i> deseados. Se activa la captura de
+datos del hiperterminal y se indica al motor que se mueva por ejemplo a 100RPM.
+Tras un par de segundos se detiene el motor y se detiene la captura.&nbsp;</p>
+<p align="justify">Se puede utilizar la hoja de cálculo excel siguiente para
+visualizar los datos capturados:</p>
+<ul>
+  <li>
+    <p align="justify"><a href="pidtest.xls">pidtest.xls</a> <font size="1">(.xls
+    120Kb)</font></li>
+</ul>
+<p align="justify">Se copiarán los datos de la captura y se pegarán en la
+celda B17, con lo que se dibujará automáticamente la gráfica de
+comportamiento de ambos motores. Véase un ejemplo:</p>
+<p align="justify"><img border="0" src="pidgraph1.png" width="755" height="403"></p>
+<p align="justify">&nbsp;</p>
+<p align="justify">De forma visual se puede ver el comportamiento del
+controlador e ir ajustando las ganancias hasta obtener interesantes resultados:</p>
+<p align="center"><img border="0" src="pidgraph2.png" width="670" height="218"></p>
+<p align="justify">&nbsp;</p>
+<p align="justify"><b><i>Ajuste de ganancias</i></b></p>
+<p align="justify">Existen varias teorías de ajuste manual de ganancias de
+controladores PID sin necesidad de entrar en formulación matemática.&nbsp;Al
+final de la página se puede acceder a varios enlaces al respecto. Básicamente
+la metodología que yo he seguido ha sido la siguiente, extraída de las
+teorías mencionadas.</p>
+<p align="justify">&nbsp;</p>
+<ol>
+  <li>
+    <p align="justify">Empezar estableciendo un valor de ganancia proporcional
+    igual o menor que uno y poniendo las demás ganancias a cero. Al anular la
+    ganancia integral se anula la influencia de la velocidad de un motor sobre
+    el otro. Observar con estos valores el resultado. Ejemplo:</li>
+</ol>
+<p align="center"><img border="0" src="pidgraph4.png" width="497" height="161"><br>
+</p>
+<ol>
+  <li value="2">
+    <p align="justify">Ir subiendo poco a poco el valor de la ganancia
+    proporcional manteniendo las demás ganancias a cero hasta que la gráfica
+    muestre oscilaciones. Ejemplo:</li>
+</ol>
+<p align="center"><img border="0" src="pidgraph3.png" width="498" height="163"><br>
+</p>
+<ol start="4">
+  <li value="3">
+    <p align="justify">Mantener la ganancia integral a cero y establecer una
+    ganancia diferencial unas 10 veces inferior a la proporcional.&nbsp;</li>
+  <li>
+    <p align="justify">Observar el resultado e ir subiendo la ganancia
+    diferencial hasta que la gráfica deje de oscilar. Ejemplo:</li>
+</ol>
+<p align="center"><img border="0" src="pidgraph5.png" width="494" height="162"><br>
+</p>
+<ol dynamicoutline>
+  <li value="5">
+    <p align="justify">Teniendo ya las ganancias P y D establecidas, empezar
+    estableciendo una ganancia integral mínima (0,02 es la mínima soportada
+    por el programa) y observar los resultados. Ir subiendo poco a poco la
+    ganancia integral hasta que ambos motores empiecen a oscilar y entrar en
+    resonancia.&nbsp;</li>
+</ol>
+    <p align="center"><img border="0" src="pidgraph7.png">
+<ol dynamicoutline>
+  <li value="6">
+    <p align="justify"> Entonces dividir la ganancia integral por 10 o 20. Se comprobará que
+    la ganancia está adecuadamente ajustada cuando la gráfica se muestre sin
+    oscilaciones y frenando bastante con la mano un motor, el otro se tienda a
+    frenarse progresivamente (Ojo que el consumo de corriente de un motor
+    bloqueado tiende a dispararse. El driver de motores ha de entregar
+    suficiente potencia o se recalentará). Ejemplo:</li>
+</ol>
+<p align="center"><img border="0" src="pidgraph6.png" width="497" height="160"><br>
+</p>
+<p>
+  <br>
+  <b>BIBLIOGRAFÍA</b></p>
+<table border="0" width="80%">
+  <tr>
+    <td width="5%" valign="top"><img border="0" src="../../images/enflag.gif" width="20" height="19">
+    </td>
+    <td width="95%">Book &quot;Building your Robot Drive Trains&quot;. Dennis
+      Clark and Michael Owings. Ed. TAB Robotics. ISBN 0-007-140850-9. Chapter 8
+      - Motor Control 201. Closing the loop with feedback.
+    </td>
+  </tr>
+  <tr>
+    <td width="5%" valign="top"><img border="0" src="../../images/enflag.gif" width="20" height="19">
+    </td>
+    <td width="95%">Book &quot;Mobile Robots&quot;. Josephe L. Jones et al. Ed.
+      A.K.Peters. ISBN 1-56881-097-0. Chapter 7; 7.8.2 - Feedback Control Loops
+    </td>
+  </tr>
+  <tr>
+    <td width="5%" valign="top"><img border="0" src="../../images/enflag.gif" width="20" height="19">
+    </td>
+    <td width="95%">PID Without a PhD (Guia sencilla de algoritmos para control PID y ajuste de ganancias)  :
+      <a href="http://www.embedded.com/2000/0010/0010feat3.htm" target="_blank"> http://www.embedded.com/2000/0010/0010feat3.htm</a>&nbsp;
+    </td>
+  </tr>
+  <tr>
+    <td width="5%" valign="top"><img border="0" src="../../images/enflag.gif" width="20" height="19">
+    </td>
+    <td width="95%">Adjusting PID Gains: <a href="http://www.ctc-control.com/customer/elearning/servotut/adjus.asp" target="_blank"> http://www.ctc-control.com/customer/elearning/servotut/adjus.asp</a>
+    </td>
+  </tr>
+  <tr>
+    <td width="5%" valign="top"><img border="0" src="../../images/spflag.gif" width="21" height="16"></td>
+    <td width="95%">Documentación tarjeta de control SkyPic: <a href="http://www.iearobotics.com/proyectos/skypic/skypic.html" target="_blank">http://www.iearobotics.com/proyectos/skypic/skypic.html</a>
+    </td>
+  </tr>
+</table>
+
+<hr>
+
+<p align="right"><script>document.write('Actualizado (mes/día/año):  '+document.lastModified)</script></p>
+    </blockquote>
+  </blockquote>
+</blockquote>
+
+</body>
+
+</html>
