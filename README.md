@@ -318,8 +318,6 @@ mentioned theories.</p>
 
 <hr>
 
-<p align="right"><script>document.write('Actualizado (mes/día/año):  '+document.lastModified)</script></p>
-    </blockquote>
   </blockquote>
 </blockquote>
 
