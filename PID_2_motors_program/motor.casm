@@ -1,0 +1,3093 @@
+/*
+  Program: Motor v 1.0
+  by Alejandro Alonso-Puig
+  mundobot.com
+  January 2005
+
+  Motor speed control for BoostC compiler. 
+  Control a couple of DC motors with a PID algorithm. Could control the speed of both or each motor. 
+  Use one PD controller per motor and an I controller to slave both motors.
+  Could receive and send information via RS232C. For more information go to www.mundobot.com
+  
+*/
+
+/*
+	Hardware connections:
+	
+	RA4	(IN)	Channel 1 from encoder of Right motor (counter register input)
+	RB0 (OUT)	Signal for change of direction of Right motor. Connect to E2 on Driver
+	RB1	(OUT)	Signal for change of direction of Left motor. Connect to E3 on Driver
+	RB2	(IN)	Channel 2 from encoder of Right motor
+	RB3	(IN)	Channel 1 from encoder of Left motor
+	RC0	(IN)	Channel 2 from encoder of Left motor (counter register input)
+	RC1 (OUT)	PWM Signal for Left motor. Connect to E4 on Driver
+	RC2 (OUT)	PWM Signal for Right motor. Connect to E1 on Driver
+	RC6			RS232
+	RC7			RS232
+*/	
+	
+#include <system.h>
+#include <rand.h>
+#include "motor.h"
+#include "serial.h"
+
+#pragma CLOCK_FREQ 4000000
+
+// Set configuration word
+#ifdef _PIC16
+#pragma DATA 0x2007, _XT_OSC & _WDT_OFF & _LVP_OFF
+#endif //_PIC16
+	
+
+
+long		 	SetPoint=0,					//Speed set for Motors (tics)  
+08CA  1283  	BCF STATUS, RP0
+08CB  1303  	BCF STATUS, RP1
+08CC  01A1  	CLRF gbl_SetPoint+D'1'
+08CD  01A0  	CLRF gbl_SetPoint
+
+				CVRight=0, CVLeft=0,		//Control Variables for the motors
+08CE  01A3  	CLRF gbl_CVRight+D'1'
+08CF  01A2  	CLRF gbl_CVRight
+08D0  01A5  	CLRF gbl_CVLeft+D'1'
+08D1  01A4  	CLRF gbl_CVLeft
+
+				CV,							//Control Variable for intermediate calculations
+				PVRight=0, PVLeft=0,		//Process variables (feedback value)
+08D2  01A9  	CLRF gbl_PVRight+D'1'
+08D3  01A8  	CLRF gbl_PVRight
+08D4  01AB  	CLRF gbl_PVLeft+D'1'
+08D5  01AA  	CLRF gbl_PVLeft
+
+				Kpro=50,					//Proportional constant (tenths)
+08D6  3032  	MOVLW	0x32
+08D7  00AC  	MOVWF gbl_Kpro
+08D8  01AD  	CLRF gbl_Kpro+D'1'
+
+				Kint=1,						//Integral constant (tenths)
+08D9  3001  	MOVLW	0x01
+08DA  00AE  	MOVWF gbl_Kint
+08DB  01AF  	CLRF gbl_Kint+D'1'
+
+				Kdif=40,					//Derivative constant (tenths)
+08DC  3028  	MOVLW	0x28
+08DD  00B0  	MOVWF gbl_Kdif
+08DE  01B1  	CLRF gbl_Kdif+D'1'
+
+				ErrRight=0, ErrLeft=0,		//Error values
+08DF  01B3  	CLRF gbl_ErrRight+D'1'
+08E0  01B2  	CLRF gbl_ErrRight
+08E1  01B5  	CLRF gbl_ErrLeft+D'1'
+08E2  01B4  	CLRF gbl_ErrLeft
+
+				LastErrRight, LastErrLeft, 	//Used for the Derivative part
+				ISum=0,						//Used for the Integral part
+08E3  01BB  	CLRF gbl_ISum+D'1'
+08E4  01BA  	CLRF gbl_ISum
+
+				Bias=0,						//Allow steering
+08E5  01BD  	CLRF gbl_Bias+D'1'
+08E6  01BC  	CLRF gbl_Bias
+
+				UnitDiv=50;					//Units division for internal calculations (This compiler doesn't use floating point)
+08E7  3032  	MOVLW	0x32
+08E8  00BE  	MOVWF gbl_UnitDiv
+08E9  01BF  	CLRF gbl_UnitDiv+D'1'
+
+											//It affects the Kpro, Kint and Kdif values, so if we want for example a derivative 
+											//constant of 0,3, Kdif should be 0,3 x UnitDiv
+char			Command, Value,				//For instructions received through serial port
+				Kpause=12;					//The period for reading the encoders (Milliseconds)
+08EA  300C  	MOVLW	0x0C
+08EB  00C2  	MOVWF gbl_Kpause
+
+bit 			Ch1Right@0x0005.4,			//Channel 1 from encoder of Right motor (RA4)
+				Ch2Right@0x0006.2,			//Channel 2 from encoder of Right motor (RB2)
+				Ch1Left@0x0006.3,			//Channel 1 from encoder of Left motor (RB3)
+				Ch2Left@0x0007.0,			//Channel 2 from encoder of Left motor (RC0)
+				DirRightFwd, DirLeftFwd,	//Used to identify the direction of the motors
+				SendFeedback=0;				//Used to identify if feedback values should be sent via RS232
+08EC  1143  	BCF gbl_SendFeedback,2
+
+				
+char			n;							//General purpose variable
+
+
+
+/////////// MOTOR CONTROL FUNCTIONS ///////////
+
+void SetPWM(long CVR, long CVL)
+
+//Sets the PWM values for both motors
+{
+		long Module;							//Used for internal calculations
+		
+
+		//Right MOTOR -----------------
+		
+		CVR=CVR/UnitDiv;						//Convert units
+00CF  1FBF  	BTFSS gbl_UnitDiv+D'1',7
+00D0  28F0  	GOTO	label268435937
+00D1  1FD3  	BTFSS SetPWM_00000_arg_CVR+D'1',7
+00D2  28E2  	GOTO	label268435938
+00D3  0952  	COMF SetPWM_00000_arg_CVR, W
+00D4  00E0  	MOVWF _div_16_16_00000_arg_a
+00D5  0953  	COMF SetPWM_00000_arg_CVR+D'1', W
+00D6  00E1  	MOVWF _div_16_16_00000_arg_a+D'1'
+00D7  0AE0  	INCF _div_16_16_00000_arg_a, F
+00D8  1903  	BTFSC STATUS,Z
+00D9  0AE1  	INCF _div_16_16_00000_arg_a+D'1', F
+00DA  093E  	COMF gbl_UnitDiv, W
+00DB  00E2  	MOVWF _div_16_16_00000_arg_b
+00DC  093F  	COMF gbl_UnitDiv+D'1', W
+00DD  00E3  	MOVWF _div_16_16_00000_arg_b+D'1'
+00DE  0AE2  	INCF _div_16_16_00000_arg_b, F
+00DF  1903  	BTFSC STATUS,Z
+00E0  0AE3  	INCF _div_16_16_00000_arg_b+D'1', F
+00E1  290E  	GOTO	label268435941
+00E2        label268435938
+00E2  1FBF  	BTFSS gbl_UnitDiv+D'1',7
+00E3  28F0  	GOTO	label268435937
+00E4  0852  	MOVF SetPWM_00000_arg_CVR, W
+00E5  00E0  	MOVWF _div_16_16_00000_arg_a
+00E6  0853  	MOVF SetPWM_00000_arg_CVR+D'1', W
+00E7  00E1  	MOVWF _div_16_16_00000_arg_a+D'1'
+00E8  093E  	COMF gbl_UnitDiv, W
+00E9  00E2  	MOVWF _div_16_16_00000_arg_b
+00EA  093F  	COMF gbl_UnitDiv+D'1', W
+00EB  00E3  	MOVWF _div_16_16_00000_arg_b+D'1'
+00EC  0AE2  	INCF _div_16_16_00000_arg_b, F
+00ED  1903  	BTFSC STATUS,Z
+00EE  0AE3  	INCF _div_16_16_00000_arg_b+D'1', F
+00EF  28FD  	GOTO	label268435943
+00F0        label268435937
+00F0  1FD3  	BTFSS SetPWM_00000_arg_CVR+D'1',7
+00F1  2906  	GOTO	label268435944
+00F2  0952  	COMF SetPWM_00000_arg_CVR, W
+00F3  00E0  	MOVWF _div_16_16_00000_arg_a
+00F4  0953  	COMF SetPWM_00000_arg_CVR+D'1', W
+00F5  00E1  	MOVWF _div_16_16_00000_arg_a+D'1'
+00F6  0AE0  	INCF _div_16_16_00000_arg_a, F
+00F7  1903  	BTFSC STATUS,Z
+00F8  0AE1  	INCF _div_16_16_00000_arg_a+D'1', F
+00F9  083E  	MOVF gbl_UnitDiv, W
+00FA  00E2  	MOVWF _div_16_16_00000_arg_b
+00FB  083F  	MOVF gbl_UnitDiv+D'1', W
+00FC  00E3  	MOVWF _div_16_16_00000_arg_b+D'1'
+00FD        label268435943
+00FD  2060  	CALL _div_16_16_00000
+00FE  0949  	COMF CompTempVarRet0, W
+00FF  00E4  	MOVWF CompTempVar36
+0100  094A  	COMF CompTempVarRet0+D'1', W
+0101  00E5  	MOVWF CompTempVar37
+0102  0AE4  	INCF CompTempVar36, F
+0103  1903  	BTFSC STATUS,Z
+0104  0AE5  	INCF CompTempVar37, F
+0105  2913  	GOTO	label268435947
+0106        label268435944
+0106  0852  	MOVF SetPWM_00000_arg_CVR, W
+0107  00E0  	MOVWF _div_16_16_00000_arg_a
+0108  0853  	MOVF SetPWM_00000_arg_CVR+D'1', W
+0109  00E1  	MOVWF _div_16_16_00000_arg_a+D'1'
+010A  083E  	MOVF gbl_UnitDiv, W
+010B  00E2  	MOVWF _div_16_16_00000_arg_b
+010C  083F  	MOVF gbl_UnitDiv+D'1', W
+010D  00E3  	MOVWF _div_16_16_00000_arg_b+D'1'
+010E        label268435941
+010E  2060  	CALL _div_16_16_00000
+010F  0849  	MOVF CompTempVarRet0, W
+0110  00E4  	MOVWF CompTempVar36
+0111  084A  	MOVF CompTempVarRet0+D'1', W
+0112  00E5  	MOVWF CompTempVar37
+0113        label268435947
+0113  0864  	MOVF CompTempVar36, W
+0114  00D2  	MOVWF SetPWM_00000_arg_CVR
+0115  0865  	MOVF CompTempVar37, W
+0116  00D3  	MOVWF SetPWM_00000_arg_CVR+D'1'
+
+
+		//Direction of rotation control
+		if (CVR>=0)	clear_bit(portb,0); 		//CW rotation
+0117  0853  	MOVF SetPWM_00000_arg_CVR+D'1', W
+0118  3A80  	XORLW 0x80
+0119  00E0  	MOVWF CompTempVar38
+011A  3080  	MOVLW	0x80
+011B  0260  	SUBWF CompTempVar38, W
+011C  1D03  	BTFSS STATUS,Z
+011D  2920  	GOTO	label268435950
+011E  3000  	MOVLW	0x00
+011F  0252  	SUBWF SetPWM_00000_arg_CVR, W
+0120        label268435950
+0120  1C03  	BTFSS STATUS,C
+0121  2924  	GOTO	label268435951
+0122  1006  	BCF gbl_portb,0
+0124        label268435951
+
+		else
+0123  2930  	GOTO	label268435954
+0130        label268435954
+
+		{
+			set_bit(portb,0); 					//CCW rotation
+0124  1406  	BSF gbl_portb,0
+
+			CVR=255+CVR;						//obtain the negative PWM wave
+0125  0852  	MOVF SetPWM_00000_arg_CVR, W
+0126  3EFF  	ADDLW 0xFF
+0127  00E0  	MOVWF CompTempVar39
+0128  0853  	MOVF SetPWM_00000_arg_CVR+D'1', W
+0129  00E1  	MOVWF CompTempVar40
+012A  1803  	BTFSC STATUS,C
+012B  0AE1  	INCF CompTempVar40, F
+012C  0860  	MOVF CompTempVar39, W
+012D  00D2  	MOVWF SetPWM_00000_arg_CVR
+012E  0861  	MOVF CompTempVar40, W
+012F  00D3  	MOVWF SetPWM_00000_arg_CVR+D'1'
+
+		}
+		
+		//Set the PWM counter
+		Module=CVR%4;
+0130  2931  	GOTO	label268435972
+0131        label268435972
+0131  2932  	GOTO	label268435976
+0132        label268435976
+0132  1FD3  	BTFSS SetPWM_00000_arg_CVR+D'1',7
+0133  2947  	GOTO	label268435979
+0134  0952  	COMF SetPWM_00000_arg_CVR, W
+0135  00D8  	MOVWF _rem_16_16_00000_arg_a
+0136  0953  	COMF SetPWM_00000_arg_CVR+D'1', W
+0137  00D9  	MOVWF _rem_16_16_00000_arg_a+D'1'
+0138  0AD8  	INCF _rem_16_16_00000_arg_a, F
+0139  1903  	BTFSC STATUS,Z
+013A  0AD9  	INCF _rem_16_16_00000_arg_a+D'1', F
+013B  3004  	MOVLW	0x04
+013C  00DA  	MOVWF _rem_16_16_00000_arg_b
+013D  01DB  	CLRF _rem_16_16_00000_arg_b+D'1'
+013E  203C  	CALL _rem_16_16_00000
+013F  0949  	COMF CompTempVarRet0, W
+0140  00E0  	MOVWF CompTempVar41
+0141  094A  	COMF CompTempVarRet0+D'1', W
+0142  00E1  	MOVWF CompTempVar42
+0143  0AE0  	INCF CompTempVar41, F
+0144  1903  	BTFSC STATUS,Z
+0145  0AE1  	INCF CompTempVar42, F
+0146  2953  	GOTO	label268435982
+0147        label268435979
+0147  0852  	MOVF SetPWM_00000_arg_CVR, W
+0148  00D8  	MOVWF _rem_16_16_00000_arg_a
+0149  0853  	MOVF SetPWM_00000_arg_CVR+D'1', W
+014A  00D9  	MOVWF _rem_16_16_00000_arg_a+D'1'
+014B  3004  	MOVLW	0x04
+014C  00DA  	MOVWF _rem_16_16_00000_arg_b
+014D  01DB  	CLRF _rem_16_16_00000_arg_b+D'1'
+014E  203C  	CALL _rem_16_16_00000
+014F  0849  	MOVF CompTempVarRet0, W
+0150  00E0  	MOVWF CompTempVar41
+0151  084A  	MOVF CompTempVarRet0+D'1', W
+0152  00E1  	MOVWF CompTempVar42
+0153        label268435982
+0153  0860  	MOVF CompTempVar41, W
+0154  00D6  	MOVWF SetPWM_00000_1_Module
+0155  0861  	MOVF CompTempVar42, W
+0156  00D7  	MOVWF SetPWM_00000_1_Module+D'1'
+
+		ccpr1l=(CVR - Module)/4; 				//Equiv to floor() function
+0157  0856  	MOVF SetPWM_00000_1_Module, W
+0158  0252  	SUBWF SetPWM_00000_arg_CVR, W
+0159  00E0  	MOVWF CompTempVar43
+015A  0A57  	INCF SetPWM_00000_1_Module+D'1', W
+015B  1803  	BTFSC STATUS,C
+015C  0857  	MOVF SetPWM_00000_1_Module+D'1', W
+015D  0253  	SUBWF SetPWM_00000_arg_CVR+D'1', W
+015E  00E1  	MOVWF CompTempVar44
+015F  0860  	MOVF CompTempVar43, W
+0160  00E2  	MOVWF CompTempVar45
+0161  1003  	BCF STATUS,C
+0162  0CE3  	RRF CompTempVar46, F
+0163  0CE2  	RRF CompTempVar45, F
+0164  1003  	BCF STATUS,C
+0165  0CE3  	RRF CompTempVar46, F
+0166  0C62  	RRF CompTempVar45, W
+0167  0095  	MOVWF gbl_ccpr1l
+
+		clear_bit(ccp1con,5);
+0168  1297  	BCF gbl_ccp1con,5
+
+		clear_bit(ccp1con,4); 		
+0169  1217  	BCF gbl_ccp1con,4
+
+		if ((Module)>2)		set_bit(ccp1con,5); 		
+016A  0857  	MOVF SetPWM_00000_1_Module+D'1', W
+016B  3A80  	XORLW 0x80
+016C  3C80  	SUBLW 0x80
+016D  1D03  	BTFSS STATUS,Z
+016E  2971  	GOTO	label268435991
+016F  0856  	MOVF SetPWM_00000_1_Module, W
+0170  3C02  	SUBLW 0x02
+0171        label268435991
+0171  1C03  	BTFSS STATUS,C
+0172  1697  	BSF gbl_ccp1con,5
+
+		if ((Module%2)==1)	set_bit(ccp1con,4);
+0173  2974  	GOTO	label268435995
+0174        label268435995
+0174  2975  	GOTO	label268435999
+0175        label268435999
+0175  1FD7  	BTFSS SetPWM_00000_1_Module+D'1',7
+0176  298A  	GOTO	label268436002
+0177  0956  	COMF SetPWM_00000_1_Module, W
+0178  00D8  	MOVWF _rem_16_16_00000_arg_a
+0179  0957  	COMF SetPWM_00000_1_Module+D'1', W
+017A  00D9  	MOVWF _rem_16_16_00000_arg_a+D'1'
+017B  0AD8  	INCF _rem_16_16_00000_arg_a, F
+017C  1903  	BTFSC STATUS,Z
+017D  0AD9  	INCF _rem_16_16_00000_arg_a+D'1', F
+017E  3002  	MOVLW	0x02
+017F  00DA  	MOVWF _rem_16_16_00000_arg_b
+0180  01DB  	CLRF _rem_16_16_00000_arg_b+D'1'
+0181  203C  	CALL _rem_16_16_00000
+0182  0949  	COMF CompTempVarRet0, W
+0183  00DC  	MOVWF CompTempVar32
+0184  094A  	COMF CompTempVarRet0+D'1', W
+0185  00DD  	MOVWF CompTempVar33
+0186  0ADC  	INCF CompTempVar32, F
+0187  1903  	BTFSC STATUS,Z
+0188  0ADD  	INCF CompTempVar33, F
+0189  2996  	GOTO	label268436005
+018A        label268436002
+018A  0856  	MOVF SetPWM_00000_1_Module, W
+018B  00D8  	MOVWF _rem_16_16_00000_arg_a
+018C  0857  	MOVF SetPWM_00000_1_Module+D'1', W
+018D  00D9  	MOVWF _rem_16_16_00000_arg_a+D'1'
+018E  3002  	MOVLW	0x02
+018F  00DA  	MOVWF _rem_16_16_00000_arg_b
+0190  01DB  	CLRF _rem_16_16_00000_arg_b+D'1'
+0191  203C  	CALL _rem_16_16_00000
+0192  0849  	MOVF CompTempVarRet0, W
+0193  00DC  	MOVWF CompTempVar32
+0194  084A  	MOVF CompTempVarRet0+D'1', W
+0195  00DD  	MOVWF CompTempVar33
+0196        label268436005
+0196  3001  	MOVLW	0x01
+0197  065C  	XORWF CompTempVar32, W
+0198  1903  	BTFSC STATUS,Z
+0199  085D  	MOVF CompTempVar33, W
+019A  1903  	BTFSC STATUS,Z
+019B  1617  	BSF gbl_ccp1con,4
+
+		
+
+		//Left MOTOR -----------------
+
+		CVL=CVL/UnitDiv;						//Convert units
+019C  1FBF  	BTFSS gbl_UnitDiv+D'1',7
+019D  29BD  	GOTO	label268436021
+019E  1FD5  	BTFSS SetPWM_00000_arg_CVL+D'1',7
+019F  29AF  	GOTO	label268436022
+01A0  0954  	COMF SetPWM_00000_arg_CVL, W
+01A1  00E0  	MOVWF _div_16_16_00000_arg_a
+01A2  0955  	COMF SetPWM_00000_arg_CVL+D'1', W
+01A3  00E1  	MOVWF _div_16_16_00000_arg_a+D'1'
+01A4  0AE0  	INCF _div_16_16_00000_arg_a, F
+01A5  1903  	BTFSC STATUS,Z
+01A6  0AE1  	INCF _div_16_16_00000_arg_a+D'1', F
+01A7  093E  	COMF gbl_UnitDiv, W
+01A8  00E2  	MOVWF _div_16_16_00000_arg_b
+01A9  093F  	COMF gbl_UnitDiv+D'1', W
+01AA  00E3  	MOVWF _div_16_16_00000_arg_b+D'1'
+01AB  0AE2  	INCF _div_16_16_00000_arg_b, F
+01AC  1903  	BTFSC STATUS,Z
+01AD  0AE3  	INCF _div_16_16_00000_arg_b+D'1', F
+01AE  29DB  	GOTO	label268436025
+01AF        label268436022
+01AF  1FBF  	BTFSS gbl_UnitDiv+D'1',7
+01B0  29BD  	GOTO	label268436021
+01B1  0854  	MOVF SetPWM_00000_arg_CVL, W
+01B2  00E0  	MOVWF _div_16_16_00000_arg_a
+01B3  0855  	MOVF SetPWM_00000_arg_CVL+D'1', W
+01B4  00E1  	MOVWF _div_16_16_00000_arg_a+D'1'
+01B5  093E  	COMF gbl_UnitDiv, W
+01B6  00E2  	MOVWF _div_16_16_00000_arg_b
+01B7  093F  	COMF gbl_UnitDiv+D'1', W
+01B8  00E3  	MOVWF _div_16_16_00000_arg_b+D'1'
+01B9  0AE2  	INCF _div_16_16_00000_arg_b, F
+01BA  1903  	BTFSC STATUS,Z
+01BB  0AE3  	INCF _div_16_16_00000_arg_b+D'1', F
+01BC  29CA  	GOTO	label268436027
+01BD        label268436021
+01BD  1FD5  	BTFSS SetPWM_00000_arg_CVL+D'1',7
+01BE  29D3  	GOTO	label268436028
+01BF  0954  	COMF SetPWM_00000_arg_CVL, W
+01C0  00E0  	MOVWF _div_16_16_00000_arg_a
+01C1  0955  	COMF SetPWM_00000_arg_CVL+D'1', W
+01C2  00E1  	MOVWF _div_16_16_00000_arg_a+D'1'
+01C3  0AE0  	INCF _div_16_16_00000_arg_a, F
+01C4  1903  	BTFSC STATUS,Z
+01C5  0AE1  	INCF _div_16_16_00000_arg_a+D'1', F
+01C6  083E  	MOVF gbl_UnitDiv, W
+01C7  00E2  	MOVWF _div_16_16_00000_arg_b
+01C8  083F  	MOVF gbl_UnitDiv+D'1', W
+01C9  00E3  	MOVWF _div_16_16_00000_arg_b+D'1'
+01CA        label268436027
+01CA  2060  	CALL _div_16_16_00000
+01CB  0949  	COMF CompTempVarRet0, W
+01CC  00E4  	MOVWF CompTempVar47
+01CD  094A  	COMF CompTempVarRet0+D'1', W
+01CE  00E5  	MOVWF CompTempVar48
+01CF  0AE4  	INCF CompTempVar47, F
+01D0  1903  	BTFSC STATUS,Z
+01D1  0AE5  	INCF CompTempVar48, F
+01D2  29E0  	GOTO	label268436031
+01D3        label268436028
+01D3  0854  	MOVF SetPWM_00000_arg_CVL, W
+01D4  00E0  	MOVWF _div_16_16_00000_arg_a
+01D5  0855  	MOVF SetPWM_00000_arg_CVL+D'1', W
+01D6  00E1  	MOVWF _div_16_16_00000_arg_a+D'1'
+01D7  083E  	MOVF gbl_UnitDiv, W
+01D8  00E2  	MOVWF _div_16_16_00000_arg_b
+01D9  083F  	MOVF gbl_UnitDiv+D'1', W
+01DA  00E3  	MOVWF _div_16_16_00000_arg_b+D'1'
+01DB        label268436025
+01DB  2060  	CALL _div_16_16_00000
+01DC  0849  	MOVF CompTempVarRet0, W
+01DD  00E4  	MOVWF CompTempVar47
+01DE  084A  	MOVF CompTempVarRet0+D'1', W
+01DF  00E5  	MOVWF CompTempVar48
+01E0        label268436031
+01E0  0864  	MOVF CompTempVar47, W
+01E1  00D4  	MOVWF SetPWM_00000_arg_CVL
+01E2  0865  	MOVF CompTempVar48, W
+01E3  00D5  	MOVWF SetPWM_00000_arg_CVL+D'1'
+
+
+		//Direction of rotation control
+		if (CVL>=0) clear_bit(portb,1); 		//CW rotation
+01E4  0855  	MOVF SetPWM_00000_arg_CVL+D'1', W
+01E5  3A80  	XORLW 0x80
+01E6  00E0  	MOVWF CompTempVar49
+01E7  3080  	MOVLW	0x80
+01E8  0260  	SUBWF CompTempVar49, W
+01E9  1D03  	BTFSS STATUS,Z
+01EA  29ED  	GOTO	label268436034
+01EB  3000  	MOVLW	0x00
+01EC  0254  	SUBWF SetPWM_00000_arg_CVL, W
+01ED        label268436034
+01ED  1C03  	BTFSS STATUS,C
+01EE  29F1  	GOTO	label268436035
+01EF  1086  	BCF gbl_portb,1
+01F1        label268436035
+
+		else
+01F0  29FD  	GOTO	label268436038
+01FD        label268436038
+
+		{
+			set_bit(portb,1); 					//CCW rotation
+01F1  1486  	BSF gbl_portb,1
+
+			CVL=255+CVL;						//obtain the negative PWM wave
+01F2  0854  	MOVF SetPWM_00000_arg_CVL, W
+01F3  3EFF  	ADDLW 0xFF
+01F4  00E0  	MOVWF CompTempVar50
+01F5  0855  	MOVF SetPWM_00000_arg_CVL+D'1', W
+01F6  00E1  	MOVWF CompTempVar51
+01F7  1803  	BTFSC STATUS,C
+01F8  0AE1  	INCF CompTempVar51, F
+01F9  0860  	MOVF CompTempVar50, W
+01FA  00D4  	MOVWF SetPWM_00000_arg_CVL
+01FB  0861  	MOVF CompTempVar51, W
+01FC  00D5  	MOVWF SetPWM_00000_arg_CVL+D'1'
+
+		}
+
+		//Set the PWM counter
+		Module=CVL%4;
+01FD  29FE  	GOTO	label268436056
+01FE        label268436056
+01FE  29FF  	GOTO	label268436060
+01FF        label268436060
+01FF  1FD5  	BTFSS SetPWM_00000_arg_CVL+D'1',7
+0200  2A14  	GOTO	label268436063
+0201  0954  	COMF SetPWM_00000_arg_CVL, W
+0202  00D8  	MOVWF _rem_16_16_00000_arg_a
+0203  0955  	COMF SetPWM_00000_arg_CVL+D'1', W
+0204  00D9  	MOVWF _rem_16_16_00000_arg_a+D'1'
+0205  0AD8  	INCF _rem_16_16_00000_arg_a, F
+0206  1903  	BTFSC STATUS,Z
+0207  0AD9  	INCF _rem_16_16_00000_arg_a+D'1', F
+0208  3004  	MOVLW	0x04
+0209  00DA  	MOVWF _rem_16_16_00000_arg_b
+020A  01DB  	CLRF _rem_16_16_00000_arg_b+D'1'
+020B  203C  	CALL _rem_16_16_00000
+020C  0949  	COMF CompTempVarRet0, W
+020D  00E0  	MOVWF CompTempVar52
+020E  094A  	COMF CompTempVarRet0+D'1', W
+020F  00E1  	MOVWF CompTempVar53
+0210  0AE0  	INCF CompTempVar52, F
+0211  1903  	BTFSC STATUS,Z
+0212  0AE1  	INCF CompTempVar53, F
+0213  2A20  	GOTO	label268436066
+0214        label268436063
+0214  0854  	MOVF SetPWM_00000_arg_CVL, W
+0215  00D8  	MOVWF _rem_16_16_00000_arg_a
+0216  0855  	MOVF SetPWM_00000_arg_CVL+D'1', W
+0217  00D9  	MOVWF _rem_16_16_00000_arg_a+D'1'
+0218  3004  	MOVLW	0x04
+0219  00DA  	MOVWF _rem_16_16_00000_arg_b
+021A  01DB  	CLRF _rem_16_16_00000_arg_b+D'1'
+021B  203C  	CALL _rem_16_16_00000
+021C  0849  	MOVF CompTempVarRet0, W
+021D  00E0  	MOVWF CompTempVar52
+021E  084A  	MOVF CompTempVarRet0+D'1', W
+021F  00E1  	MOVWF CompTempVar53
+0220        label268436066
+0220  0860  	MOVF CompTempVar52, W
+0221  00D6  	MOVWF SetPWM_00000_1_Module
+0222  0861  	MOVF CompTempVar53, W
+0223  00D7  	MOVWF SetPWM_00000_1_Module+D'1'
+
+		ccpr2l=(CVL - (Module))/4; 				//Equiv to floor() function
+0224  0856  	MOVF SetPWM_00000_1_Module, W
+0225  0254  	SUBWF SetPWM_00000_arg_CVL, W
+0226  00E0  	MOVWF CompTempVar54
+0227  0A57  	INCF SetPWM_00000_1_Module+D'1', W
+0228  1803  	BTFSC STATUS,C
+0229  0857  	MOVF SetPWM_00000_1_Module+D'1', W
+022A  0255  	SUBWF SetPWM_00000_arg_CVL+D'1', W
+022B  00E1  	MOVWF CompTempVar55
+022C  0860  	MOVF CompTempVar54, W
+022D  00E2  	MOVWF CompTempVar56
+022E  1003  	BCF STATUS,C
+022F  0CE3  	RRF CompTempVar57, F
+0230  0CE2  	RRF CompTempVar56, F
+0231  1003  	BCF STATUS,C
+0232  0CE3  	RRF CompTempVar57, F
+0233  0C62  	RRF CompTempVar56, W
+0234  009B  	MOVWF gbl_ccpr2l
+
+		clear_bit(ccp2con,5);
+0235  129D  	BCF gbl_ccp2con,5
+
+		clear_bit(ccp2con,4); 		
+0236  121D  	BCF gbl_ccp2con,4
+
+		if ((Module)>2)		set_bit(ccp2con,5); 		
+0237  0857  	MOVF SetPWM_00000_1_Module+D'1', W
+0238  3A80  	XORLW 0x80
+0239  3C80  	SUBLW 0x80
+023A  1D03  	BTFSS STATUS,Z
+023B  2A3E  	GOTO	label268436075
+023C  0856  	MOVF SetPWM_00000_1_Module, W
+023D  3C02  	SUBLW 0x02
+023E        label268436075
+023E  1C03  	BTFSS STATUS,C
+023F  169D  	BSF gbl_ccp2con,5
+
+		if ((Module%2)==1)	set_bit(ccp2con,4);
+0240  2A41  	GOTO	label268436079
+0241        label268436079
+0241  2A42  	GOTO	label268436083
+0242        label268436083
+0242  1FD7  	BTFSS SetPWM_00000_1_Module+D'1',7
+0243  2A57  	GOTO	label268436086
+0244  0956  	COMF SetPWM_00000_1_Module, W
+0245  00D8  	MOVWF _rem_16_16_00000_arg_a
+0246  0957  	COMF SetPWM_00000_1_Module+D'1', W
+0247  00D9  	MOVWF _rem_16_16_00000_arg_a+D'1'
+0248  0AD8  	INCF _rem_16_16_00000_arg_a, F
+0249  1903  	BTFSC STATUS,Z
+024A  0AD9  	INCF _rem_16_16_00000_arg_a+D'1', F
+024B  3002  	MOVLW	0x02
+024C  00DA  	MOVWF _rem_16_16_00000_arg_b
+024D  01DB  	CLRF _rem_16_16_00000_arg_b+D'1'
+024E  203C  	CALL _rem_16_16_00000
+024F  0949  	COMF CompTempVarRet0, W
+0250  00DE  	MOVWF CompTempVar34
+0251  094A  	COMF CompTempVarRet0+D'1', W
+0252  00DF  	MOVWF CompTempVar35
+0253  0ADE  	INCF CompTempVar34, F
+0254  1903  	BTFSC STATUS,Z
+0255  0ADF  	INCF CompTempVar35, F
+0256  2A63  	GOTO	label268436089
+0257        label268436086
+0257  0856  	MOVF SetPWM_00000_1_Module, W
+0258  00D8  	MOVWF _rem_16_16_00000_arg_a
+0259  0857  	MOVF SetPWM_00000_1_Module+D'1', W
+025A  00D9  	MOVWF _rem_16_16_00000_arg_a+D'1'
+025B  3002  	MOVLW	0x02
+025C  00DA  	MOVWF _rem_16_16_00000_arg_b
+025D  01DB  	CLRF _rem_16_16_00000_arg_b+D'1'
+025E  203C  	CALL _rem_16_16_00000
+025F  0849  	MOVF CompTempVarRet0, W
+0260  00DE  	MOVWF CompTempVar34
+0261  084A  	MOVF CompTempVarRet0+D'1', W
+0262  00DF  	MOVWF CompTempVar35
+0263        label268436089
+0263  3001  	MOVLW	0x01
+0264  065E  	XORWF CompTempVar34, W
+0265  1903  	BTFSC STATUS,Z
+0266  085F  	MOVF CompTempVar35, W
+0267  1903  	BTFSC STATUS,Z
+0268  161D  	BSF gbl_ccp2con,4
+
+
+}
+0269  0008  	RETURN
+
+
+/////////// BODY ///////////
+
+void main()
+
+{
+    trisa = 0;									//configure port A as output
+02BF  1683  	BSF STATUS, RP0
+02C0  1303  	BCF STATUS, RP1
+02C1  0185  	CLRF gbl_trisa
+
+    trisb = 0;									//configure port B as output
+02C2  0186  	CLRF gbl_trisb
+
+    trisc = 0;									//configure port C as output
+02C3  0187  	CLRF gbl_trisc
+
+    portb = 0;
+02C4  1283  	BCF STATUS, RP0
+02C5  0186  	CLRF gbl_portb
+
+    porta = 0;
+02C6  0185  	CLRF gbl_porta
+
+
+	serialInit(25);								//Serial port inicialization. 9600bps
+02C7  3019  	MOVLW	0x19
+02C8  00CB  	MOVWF serialInit_00000_arg_rateScaler
+02C9  20C2  	CALL serialInit_00000
+
+
+
+	//Configuration of input counters for reading the encoders
+	//Timer0
+    set_bit(trisa,4); 							//RA4 as input (T0CKI - TMR0) - Right Motor encoder signal
+02CA  1683  	BSF STATUS, RP0
+02CB  1605  	BSF gbl_trisa,4
+
+	option_reg=0;
+02CC  0181  	CLRF gbl_option_reg
+
+	set_bit(option_reg, T0CS );					//TMR0. Counter mode. External signal
+02CD  1681  	BSF gbl_option_reg,5
+
+	set_bit(option_reg, PSA );					//Prescaler assigned to watchdog timer (not used by TMR0)
+02CE  1581  	BSF gbl_option_reg,3
+
+	//Timer1
+    set_bit(trisc,0); 							//RC0 as input (T1CKI - TMR1) - Left Motor encoder signal
+02CF  1407  	BSF gbl_trisc,0
+
+    t1con=0; 					
+02D0  1283  	BCF STATUS, RP0
+02D1  0190  	CLRF gbl_t1con
+
+    set_bit(t1con,TMR1CS); 						//TMR1. Counter mode. External signal
+02D2  1490  	BSF gbl_t1con,1
+
+    set_bit(t1con,TMR1ON); 						//Enable timer
+02D3  1410  	BSF gbl_t1con,0
+
+    set_bit(t1con,T1SYNC); 						//No Sync
+02D4  1510  	BSF gbl_t1con,2
+
+
+    set_bit(trisb,2); 							//RB2 as input for 2nd ch of Right Motor quadrature encoder 
+02D5  1683  	BSF STATUS, RP0
+02D6  1506  	BSF gbl_trisb,2
+
+    set_bit(trisb,3); 							//RB3 as input for 2nd ch of Left Motor quadrature encoder 
+02D7  1586  	BSF gbl_trisb,3
+
+
+	//PWM generation 
+	//CCP1
+    clear_bit(trisc,2); 						//RC2 as output (PWM1)
+02D8  1107  	BCF gbl_trisc,2
+
+	pr2=49;										//proper value for a 10khz PWM signal
+02D9  3031  	MOVLW	0x31
+02DA  0092  	MOVWF gbl_pr2
+
+	SetPWM(0, 0);
+02DB  1283  	BCF STATUS, RP0
+02DC  01D3  	CLRF SetPWM_00000_arg_CVR+D'1'
+02DD  01D2  	CLRF SetPWM_00000_arg_CVR
+02DE  01D5  	CLRF SetPWM_00000_arg_CVL+D'1'
+02DF  01D4  	CLRF SetPWM_00000_arg_CVL
+02E0  20CF  	CALL SetPWM_00000
+
+    t2con=0; 									//Prescaler and postscaler =1
+02E1  0192  	CLRF gbl_t2con
+
+    set_bit(t2con,TMR2ON); 						//Activate timer
+02E2  1512  	BSF gbl_t2con,2
+
+    set_bit(ccp1con,CCP1M3); 					//Activate PWM generation
+02E3  1597  	BSF gbl_ccp1con,3
+
+    set_bit(ccp1con,CCP1M2); 					//Activate PWM generation
+02E4  1517  	BSF gbl_ccp1con,2
+
+	//CCP2
+    clear_bit(trisc,1); 						//RC1 as output (PWM2)
+02E5  1683  	BSF STATUS, RP0
+02E6  1087  	BCF gbl_trisc,1
+
+    set_bit(ccp2con,CCP2M3); 					//Activate PWM generation
+02E7  1283  	BCF STATUS, RP0
+02E8  159D  	BSF gbl_ccp2con,3
+
+    set_bit(ccp2con,CCP2M2); 					//Activate PWM generation
+02E9  151D  	BSF gbl_ccp2con,2
+
+   
+	
+	while(1)	/////MAIN LOOP/////
+02EA        label268436143
+08C8  118A  	BCF PCLATH,3
+08C9  2AEA  	GOTO	label268436143
+
+    {
+		// Check Speed from encoders
+		tmr0=tmr1l=0;							//Start measurement period
+02EA  01D2  	CLRF CompTempVar62
+02EB  018E  	CLRF gbl_tmr1l
+02EC  0852  	MOVF CompTempVar62, W
+02ED  0081  	MOVWF gbl_tmr0
+
+		delay_ms(Kpause);						//Allow timer to read pulses from encoder
+02EE  0842  	MOVF gbl_Kpause, W
+02EF  00D2  	MOVWF delay_ms_00000_arg_del
+02F0  2003  	CALL delay_ms_00000
+
+		PVRight=tmr0;							//Read feedback Right encoder
+02F1  0801  	MOVF gbl_tmr0, W
+02F2  00A8  	MOVWF gbl_PVRight
+02F3  01A9  	CLRF gbl_PVRight+D'1'
+
+		PVLeft=tmr1l;							//Read feedback Left encoder
+02F4  080E  	MOVF gbl_tmr1l, W
+02F5  00AA  	MOVWF gbl_PVLeft
+02F6  01AB  	CLRF gbl_PVLeft+D'1'
+
+		
+		// Check direction from quadrature encoders
+		for (n=0; n<255;n++) if (!Ch1Right) break;
+02F7  01C4  	CLRF gbl_n
+02F8        label268436190
+02F8  30FF  	MOVLW	0xFF
+02F9  0244  	SUBWF gbl_n, W
+02FA  1803  	BTFSC STATUS,C
+02FB  2B01  	GOTO	label268436191
+02FC  1A05  	BTFSC gbl_Ch1Right,4
+02FD  2AFF  	GOTO	label268436193
+02FE  2B01  	GOTO	label268436191
+02FF        label268436193
+02FF  0AC4  	INCF gbl_n, F
+0300  2AF8  	GOTO	label268436190
+0301        label268436191
+
+		for (n=0; n<255;n++) if (Ch1Right) break;
+0301  01C4  	CLRF gbl_n
+0302        label268436196
+0302  30FF  	MOVLW	0xFF
+0303  0244  	SUBWF gbl_n, W
+0304  1803  	BTFSC STATUS,C
+0305  2B0A  	GOTO	label268436197
+0306  1A05  	BTFSC gbl_Ch1Right,4
+0307  2B0A  	GOTO	label268436197
+0308  0AC4  	INCF gbl_n, F
+0309  2B02  	GOTO	label268436196
+030A        label268436197
+
+		if (Ch2Right){
+030A  1D06  	BTFSS gbl_Ch2Right,2
+030B  2B19  	GOTO	label268436202
+0319        label268436202
+
+			DirRightFwd=0;
+030C  1043  	BCF gbl_DirRightFwd,0
+
+			PVRight=-PVRight;}
+030D  0928  	COMF gbl_PVRight, W
+030E  00D2  	MOVWF CompTempVar63
+030F  0929  	COMF gbl_PVRight+D'1', W
+0310  00D3  	MOVWF CompTempVar64
+0311  0AD2  	INCF CompTempVar63, F
+0312  1903  	BTFSC STATUS,Z
+0313  0AD3  	INCF CompTempVar64, F
+0314  0852  	MOVF CompTempVar63, W
+0315  00A8  	MOVWF gbl_PVRight
+0316  0853  	MOVF CompTempVar64, W
+0317  00A9  	MOVWF gbl_PVRight+D'1'
+
+		else			DirRightFwd=1;
+0318  2B1A  	GOTO	label268436210
+0319  1443  	BSF gbl_DirRightFwd,0
+031A        label268436210
+
+		
+		for (n=0; n<255;n++) if (!Ch2Left) break;
+031A  01C4  	CLRF gbl_n
+031B        label268436212
+031B  30FF  	MOVLW	0xFF
+031C  0244  	SUBWF gbl_n, W
+031D  1803  	BTFSC STATUS,C
+031E  2B24  	GOTO	label268436213
+031F  1807  	BTFSC gbl_Ch2Left,0
+0320  2B22  	GOTO	label268436215
+0321  2B24  	GOTO	label268436213
+0322        label268436215
+0322  0AC4  	INCF gbl_n, F
+0323  2B1B  	GOTO	label268436212
+0324        label268436213
+
+		for (n=0; n<255;n++) if (Ch2Left) break;
+0324  01C4  	CLRF gbl_n
+0325        label268436218
+0325  30FF  	MOVLW	0xFF
+0326  0244  	SUBWF gbl_n, W
+0327  1803  	BTFSC STATUS,C
+0328  2B2D  	GOTO	label268436219
+0329  1807  	BTFSC gbl_Ch2Left,0
+032A  2B2D  	GOTO	label268436219
+032B  0AC4  	INCF gbl_n, F
+032C  2B25  	GOTO	label268436218
+032D        label268436219
+
+		if (Ch1Left){
+032D  1D86  	BTFSS gbl_Ch1Left,3
+032E  2B3C  	GOTO	label268436224
+033C        label268436224
+
+			DirLeftFwd=0;
+032F  10C3  	BCF gbl_DirLeftFwd,1
+
+			PVLeft=-PVLeft;}
+0330  092A  	COMF gbl_PVLeft, W
+0331  00D2  	MOVWF CompTempVar65
+0332  092B  	COMF gbl_PVLeft+D'1', W
+0333  00D3  	MOVWF CompTempVar66
+0334  0AD2  	INCF CompTempVar65, F
+0335  1903  	BTFSC STATUS,Z
+0336  0AD3  	INCF CompTempVar66, F
+0337  0852  	MOVF CompTempVar65, W
+0338  00AA  	MOVWF gbl_PVLeft
+0339  0853  	MOVF CompTempVar66, W
+033A  00AB  	MOVWF gbl_PVLeft+D'1'
+
+		else			DirLeftFwd=1;
+033B  2B3D  	GOTO	label268436232
+033C  14C3  	BSF gbl_DirLeftFwd,1
+033D        label268436232
+
+
+		
+		//Right Motor Feedback Speed Control
+		LastErrRight=ErrRight;
+033D  0832  	MOVF gbl_ErrRight, W
+033E  00B6  	MOVWF gbl_LastErrRight
+033F  0833  	MOVF gbl_ErrRight+D'1', W
+0340  00B7  	MOVWF gbl_LastErrRight+D'1'
+
+		ErrRight=SetPoint-PVRight;
+0341  0828  	MOVF gbl_PVRight, W
+0342  0220  	SUBWF gbl_SetPoint, W
+0343  00D2  	MOVWF CompTempVar67
+0344  0A29  	INCF gbl_PVRight+D'1', W
+0345  1803  	BTFSC STATUS,C
+0346  0829  	MOVF gbl_PVRight+D'1', W
+0347  0221  	SUBWF gbl_SetPoint+D'1', W
+0348  00D3  	MOVWF CompTempVar68
+0349  0852  	MOVF CompTempVar67, W
+034A  00B2  	MOVWF gbl_ErrRight
+034B  0853  	MOVF CompTempVar68, W
+034C  00B3  	MOVWF gbl_ErrRight+D'1'
+
+		CVRight=CVRight + Kpro*ErrRight;					//Proportional part
+034D  01D7  	CLRF CompTempVar70
+034E  1FB2  	BTFSS gbl_ErrRight,7
+034F  2B6F  	GOTO	label268436252
+0350  1FAC  	BTFSS gbl_Kpro,7
+0351  2B61  	GOTO	label268436253
+0352  092C  	COMF gbl_Kpro, W
+0353  00D2  	MOVWF _mul_16_16_00000_arg_a
+0354  092D  	COMF gbl_Kpro+D'1', W
+0355  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0356  0AD2  	INCF _mul_16_16_00000_arg_a, F
+0357  1903  	BTFSC STATUS,Z
+0358  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+0359  0932  	COMF gbl_ErrRight, W
+035A  00D4  	MOVWF _mul_16_16_00000_arg_b
+035B  0933  	COMF gbl_ErrRight+D'1', W
+035C  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+035D  0AD4  	INCF _mul_16_16_00000_arg_b, F
+035E  1903  	BTFSC STATUS,Z
+035F  0AD5  	INCF _mul_16_16_00000_arg_b+D'1', F
+0360  2B8D  	GOTO	label268436256
+0361        label268436253
+0361  1FB2  	BTFSS gbl_ErrRight,7
+0362  2B6F  	GOTO	label268436252
+0363  082C  	MOVF gbl_Kpro, W
+0364  00D2  	MOVWF _mul_16_16_00000_arg_a
+0365  082D  	MOVF gbl_Kpro+D'1', W
+0366  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0367  0932  	COMF gbl_ErrRight, W
+0368  00D4  	MOVWF _mul_16_16_00000_arg_b
+0369  0933  	COMF gbl_ErrRight+D'1', W
+036A  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+036B  0AD4  	INCF _mul_16_16_00000_arg_b, F
+036C  1903  	BTFSC STATUS,Z
+036D  0AD5  	INCF _mul_16_16_00000_arg_b+D'1', F
+036E  2B7C  	GOTO	label268436258
+036F        label268436252
+036F  1FAC  	BTFSS gbl_Kpro,7
+0370  2B85  	GOTO	label268436259
+0371  092C  	COMF gbl_Kpro, W
+0372  00D2  	MOVWF _mul_16_16_00000_arg_a
+0373  092D  	COMF gbl_Kpro+D'1', W
+0374  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0375  0AD2  	INCF _mul_16_16_00000_arg_a, F
+0376  1903  	BTFSC STATUS,Z
+0377  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+0378  0832  	MOVF gbl_ErrRight, W
+0379  00D4  	MOVWF _mul_16_16_00000_arg_b
+037A  0833  	MOVF gbl_ErrRight+D'1', W
+037B  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+037C        label268436258
+037C  226A  	CALL _mul_16_16_00000
+037D  0949  	COMF CompTempVarRet0, W
+037E  00D6  	MOVWF CompTempVar69
+037F  094A  	COMF CompTempVarRet0+D'1', W
+0380  00D7  	MOVWF CompTempVar70
+0381  0AD6  	INCF CompTempVar69, F
+0382  1903  	BTFSC STATUS,Z
+0383  0AD7  	INCF CompTempVar70, F
+0384  2B92  	GOTO	label268436262
+0385        label268436259
+0385  082C  	MOVF gbl_Kpro, W
+0386  00D2  	MOVWF _mul_16_16_00000_arg_a
+0387  082D  	MOVF gbl_Kpro+D'1', W
+0388  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0389  0832  	MOVF gbl_ErrRight, W
+038A  00D4  	MOVWF _mul_16_16_00000_arg_b
+038B  0833  	MOVF gbl_ErrRight+D'1', W
+038C  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+038D        label268436256
+038D  226A  	CALL _mul_16_16_00000
+038E  0849  	MOVF CompTempVarRet0, W
+038F  00D6  	MOVWF CompTempVar69
+0390  084A  	MOVF CompTempVarRet0+D'1', W
+0391  00D7  	MOVWF CompTempVar70
+0392        label268436262
+0392  0856  	MOVF CompTempVar69, W
+0393  0722  	ADDWF gbl_CVRight, W
+0394  00D8  	MOVWF CompTempVar71
+0395  0857  	MOVF CompTempVar70, W
+0396  00D9  	MOVWF CompTempVar72
+0397  0823  	MOVF gbl_CVRight+D'1', W
+0398  1803  	BTFSC STATUS,C
+0399  0AD9  	INCF CompTempVar72, F
+039A  07D9  	ADDWF CompTempVar72, F
+039B  0858  	MOVF CompTempVar71, W
+039C  00A2  	MOVWF gbl_CVRight
+039D  0859  	MOVF CompTempVar72, W
+039E  00A3  	MOVWF gbl_CVRight+D'1'
+
+		CVRight=CVRight + Kdif*(ErrRight-LastErrRight);		//Derivative part
+039F  0836  	MOVF gbl_LastErrRight, W
+03A0  0232  	SUBWF gbl_ErrRight, W
+03A1  00D6  	MOVWF CompTempVar73
+03A2  0A37  	INCF gbl_LastErrRight+D'1', W
+03A3  1803  	BTFSC STATUS,C
+03A4  0837  	MOVF gbl_LastErrRight+D'1', W
+03A5  0233  	SUBWF gbl_ErrRight+D'1', W
+03A6  00D7  	MOVWF CompTempVar74
+03A7  01D9  	CLRF CompTempVar76
+03A8  1FD6  	BTFSS CompTempVar73,7
+03A9  2BC9  	GOTO	label268436280
+03AA  1FB0  	BTFSS gbl_Kdif,7
+03AB  2BBB  	GOTO	label268436281
+03AC  0930  	COMF gbl_Kdif, W
+03AD  00D2  	MOVWF _mul_16_16_00000_arg_a
+03AE  0931  	COMF gbl_Kdif+D'1', W
+03AF  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+03B0  0AD2  	INCF _mul_16_16_00000_arg_a, F
+03B1  1903  	BTFSC STATUS,Z
+03B2  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+03B3  0956  	COMF CompTempVar73, W
+03B4  00D4  	MOVWF _mul_16_16_00000_arg_b
+03B5  0957  	COMF CompTempVar74, W
+03B6  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+03B7  0AD4  	INCF _mul_16_16_00000_arg_b, F
+03B8  1903  	BTFSC STATUS,Z
+03B9  0AD5  	INCF _mul_16_16_00000_arg_b+D'1', F
+03BA  2BE7  	GOTO	label268436284
+03BB        label268436281
+03BB  1FD6  	BTFSS CompTempVar73,7
+03BC  2BC9  	GOTO	label268436280
+03BD  0830  	MOVF gbl_Kdif, W
+03BE  00D2  	MOVWF _mul_16_16_00000_arg_a
+03BF  0831  	MOVF gbl_Kdif+D'1', W
+03C0  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+03C1  0956  	COMF CompTempVar73, W
+03C2  00D4  	MOVWF _mul_16_16_00000_arg_b
+03C3  0957  	COMF CompTempVar74, W
+03C4  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+03C5  0AD4  	INCF _mul_16_16_00000_arg_b, F
+03C6  1903  	BTFSC STATUS,Z
+03C7  0AD5  	INCF _mul_16_16_00000_arg_b+D'1', F
+03C8  2BD6  	GOTO	label268436286
+03C9        label268436280
+03C9  1FB0  	BTFSS gbl_Kdif,7
+03CA  2BDF  	GOTO	label268436287
+03CB  0930  	COMF gbl_Kdif, W
+03CC  00D2  	MOVWF _mul_16_16_00000_arg_a
+03CD  0931  	COMF gbl_Kdif+D'1', W
+03CE  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+03CF  0AD2  	INCF _mul_16_16_00000_arg_a, F
+03D0  1903  	BTFSC STATUS,Z
+03D1  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+03D2  0856  	MOVF CompTempVar73, W
+03D3  00D4  	MOVWF _mul_16_16_00000_arg_b
+03D4  0857  	MOVF CompTempVar74, W
+03D5  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+03D6        label268436286
+03D6  226A  	CALL _mul_16_16_00000
+03D7  0949  	COMF CompTempVarRet0, W
+03D8  00D8  	MOVWF CompTempVar75
+03D9  094A  	COMF CompTempVarRet0+D'1', W
+03DA  00D9  	MOVWF CompTempVar76
+03DB  0AD8  	INCF CompTempVar75, F
+03DC  1903  	BTFSC STATUS,Z
+03DD  0AD9  	INCF CompTempVar76, F
+03DE  2BEC  	GOTO	label268436290
+03DF        label268436287
+03DF  0830  	MOVF gbl_Kdif, W
+03E0  00D2  	MOVWF _mul_16_16_00000_arg_a
+03E1  0831  	MOVF gbl_Kdif+D'1', W
+03E2  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+03E3  0856  	MOVF CompTempVar73, W
+03E4  00D4  	MOVWF _mul_16_16_00000_arg_b
+03E5  0857  	MOVF CompTempVar74, W
+03E6  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+03E7        label268436284
+03E7  226A  	CALL _mul_16_16_00000
+03E8  0849  	MOVF CompTempVarRet0, W
+03E9  00D8  	MOVWF CompTempVar75
+03EA  084A  	MOVF CompTempVarRet0+D'1', W
+03EB  00D9  	MOVWF CompTempVar76
+03EC        label268436290
+03EC  0858  	MOVF CompTempVar75, W
+03ED  0722  	ADDWF gbl_CVRight, W
+03EE  00DA  	MOVWF CompTempVar77
+03EF  0859  	MOVF CompTempVar76, W
+03F0  00DB  	MOVWF CompTempVar78
+03F1  0823  	MOVF gbl_CVRight+D'1', W
+03F2  1803  	BTFSC STATUS,C
+03F3  0ADB  	INCF CompTempVar78, F
+03F4  07DB  	ADDWF CompTempVar78, F
+03F5  085A  	MOVF CompTempVar77, W
+03F6  00A2  	MOVWF gbl_CVRight
+03F7  085B  	MOVF CompTempVar78, W
+03F8  00A3  	MOVWF gbl_CVRight+D'1'
+
+
+		//Left Motor Feedback Speed Control
+		LastErrLeft=ErrLeft;
+03F9  0834  	MOVF gbl_ErrLeft, W
+03FA  00B8  	MOVWF gbl_LastErrLeft
+03FB  0835  	MOVF gbl_ErrLeft+D'1', W
+03FC  00B9  	MOVWF gbl_LastErrLeft+D'1'
+
+		ErrLeft=SetPoint-PVLeft;
+03FD  082A  	MOVF gbl_PVLeft, W
+03FE  0220  	SUBWF gbl_SetPoint, W
+03FF  00D2  	MOVWF CompTempVar79
+0400  0A2B  	INCF gbl_PVLeft+D'1', W
+0401  1803  	BTFSC STATUS,C
+0402  082B  	MOVF gbl_PVLeft+D'1', W
+0403  0221  	SUBWF gbl_SetPoint+D'1', W
+0404  00D3  	MOVWF CompTempVar80
+0405  0852  	MOVF CompTempVar79, W
+0406  00B4  	MOVWF gbl_ErrLeft
+0407  0853  	MOVF CompTempVar80, W
+0408  00B5  	MOVWF gbl_ErrLeft+D'1'
+
+		CVLeft=CVLeft + Kpro*ErrLeft;						//Proportional part
+0409  01D7  	CLRF CompTempVar82
+040A  1FB4  	BTFSS gbl_ErrLeft,7
+040B  2C2B  	GOTO	label268436310
+040C  1FAC  	BTFSS gbl_Kpro,7
+040D  2C1D  	GOTO	label268436311
+040E  092C  	COMF gbl_Kpro, W
+040F  00D2  	MOVWF _mul_16_16_00000_arg_a
+0410  092D  	COMF gbl_Kpro+D'1', W
+0411  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0412  0AD2  	INCF _mul_16_16_00000_arg_a, F
+0413  1903  	BTFSC STATUS,Z
+0414  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+0415  0934  	COMF gbl_ErrLeft, W
+0416  00D4  	MOVWF _mul_16_16_00000_arg_b
+0417  0935  	COMF gbl_ErrLeft+D'1', W
+0418  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+0419  0AD4  	INCF _mul_16_16_00000_arg_b, F
+041A  1903  	BTFSC STATUS,Z
+041B  0AD5  	INCF _mul_16_16_00000_arg_b+D'1', F
+041C  2C49  	GOTO	label268436314
+041D        label268436311
+041D  1FB4  	BTFSS gbl_ErrLeft,7
+041E  2C2B  	GOTO	label268436310
+041F  082C  	MOVF gbl_Kpro, W
+0420  00D2  	MOVWF _mul_16_16_00000_arg_a
+0421  082D  	MOVF gbl_Kpro+D'1', W
+0422  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0423  0934  	COMF gbl_ErrLeft, W
+0424  00D4  	MOVWF _mul_16_16_00000_arg_b
+0425  0935  	COMF gbl_ErrLeft+D'1', W
+0426  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+0427  0AD4  	INCF _mul_16_16_00000_arg_b, F
+0428  1903  	BTFSC STATUS,Z
+0429  0AD5  	INCF _mul_16_16_00000_arg_b+D'1', F
+042A  2C38  	GOTO	label268436316
+042B        label268436310
+042B  1FAC  	BTFSS gbl_Kpro,7
+042C  2C41  	GOTO	label268436317
+042D  092C  	COMF gbl_Kpro, W
+042E  00D2  	MOVWF _mul_16_16_00000_arg_a
+042F  092D  	COMF gbl_Kpro+D'1', W
+0430  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0431  0AD2  	INCF _mul_16_16_00000_arg_a, F
+0432  1903  	BTFSC STATUS,Z
+0433  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+0434  0834  	MOVF gbl_ErrLeft, W
+0435  00D4  	MOVWF _mul_16_16_00000_arg_b
+0436  0835  	MOVF gbl_ErrLeft+D'1', W
+0437  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+0438        label268436316
+0438  226A  	CALL _mul_16_16_00000
+0439  0949  	COMF CompTempVarRet0, W
+043A  00D6  	MOVWF CompTempVar81
+043B  094A  	COMF CompTempVarRet0+D'1', W
+043C  00D7  	MOVWF CompTempVar82
+043D  0AD6  	INCF CompTempVar81, F
+043E  1903  	BTFSC STATUS,Z
+043F  0AD7  	INCF CompTempVar82, F
+0440  2C4E  	GOTO	label268436320
+0441        label268436317
+0441  082C  	MOVF gbl_Kpro, W
+0442  00D2  	MOVWF _mul_16_16_00000_arg_a
+0443  082D  	MOVF gbl_Kpro+D'1', W
+0444  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0445  0834  	MOVF gbl_ErrLeft, W
+0446  00D4  	MOVWF _mul_16_16_00000_arg_b
+0447  0835  	MOVF gbl_ErrLeft+D'1', W
+0448  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+0449        label268436314
+0449  226A  	CALL _mul_16_16_00000
+044A  0849  	MOVF CompTempVarRet0, W
+044B  00D6  	MOVWF CompTempVar81
+044C  084A  	MOVF CompTempVarRet0+D'1', W
+044D  00D7  	MOVWF CompTempVar82
+044E        label268436320
+044E  0856  	MOVF CompTempVar81, W
+044F  0724  	ADDWF gbl_CVLeft, W
+0450  00D8  	MOVWF CompTempVar83
+0451  0857  	MOVF CompTempVar82, W
+0452  00D9  	MOVWF CompTempVar84
+0453  0825  	MOVF gbl_CVLeft+D'1', W
+0454  1803  	BTFSC STATUS,C
+0455  0AD9  	INCF CompTempVar84, F
+0456  07D9  	ADDWF CompTempVar84, F
+0457  0858  	MOVF CompTempVar83, W
+0458  00A4  	MOVWF gbl_CVLeft
+0459  0859  	MOVF CompTempVar84, W
+045A  00A5  	MOVWF gbl_CVLeft+D'1'
+
+		CVLeft=CVLeft + Kdif*(ErrLeft-LastErrLeft);			//Derivative part
+045B  0838  	MOVF gbl_LastErrLeft, W
+045C  0234  	SUBWF gbl_ErrLeft, W
+045D  00D6  	MOVWF CompTempVar85
+045E  0A39  	INCF gbl_LastErrLeft+D'1', W
+045F  1803  	BTFSC STATUS,C
+0460  0839  	MOVF gbl_LastErrLeft+D'1', W
+0461  0235  	SUBWF gbl_ErrLeft+D'1', W
+0462  00D7  	MOVWF CompTempVar86
+0463  01D9  	CLRF CompTempVar88
+0464  1FD6  	BTFSS CompTempVar85,7
+0465  2C85  	GOTO	label268436338
+0466  1FB0  	BTFSS gbl_Kdif,7
+0467  2C77  	GOTO	label268436339
+0468  0930  	COMF gbl_Kdif, W
+0469  00D2  	MOVWF _mul_16_16_00000_arg_a
+046A  0931  	COMF gbl_Kdif+D'1', W
+046B  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+046C  0AD2  	INCF _mul_16_16_00000_arg_a, F
+046D  1903  	BTFSC STATUS,Z
+046E  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+046F  0956  	COMF CompTempVar85, W
+0470  00D4  	MOVWF _mul_16_16_00000_arg_b
+0471  0957  	COMF CompTempVar86, W
+0472  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+0473  0AD4  	INCF _mul_16_16_00000_arg_b, F
+0474  1903  	BTFSC STATUS,Z
+0475  0AD5  	INCF _mul_16_16_00000_arg_b+D'1', F
+0476  2CA3  	GOTO	label268436342
+0477        label268436339
+0477  1FD6  	BTFSS CompTempVar85,7
+0478  2C85  	GOTO	label268436338
+0479  0830  	MOVF gbl_Kdif, W
+047A  00D2  	MOVWF _mul_16_16_00000_arg_a
+047B  0831  	MOVF gbl_Kdif+D'1', W
+047C  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+047D  0956  	COMF CompTempVar85, W
+047E  00D4  	MOVWF _mul_16_16_00000_arg_b
+047F  0957  	COMF CompTempVar86, W
+0480  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+0481  0AD4  	INCF _mul_16_16_00000_arg_b, F
+0482  1903  	BTFSC STATUS,Z
+0483  0AD5  	INCF _mul_16_16_00000_arg_b+D'1', F
+0484  2C92  	GOTO	label268436344
+0485        label268436338
+0485  1FB0  	BTFSS gbl_Kdif,7
+0486  2C9B  	GOTO	label268436345
+0487  0930  	COMF gbl_Kdif, W
+0488  00D2  	MOVWF _mul_16_16_00000_arg_a
+0489  0931  	COMF gbl_Kdif+D'1', W
+048A  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+048B  0AD2  	INCF _mul_16_16_00000_arg_a, F
+048C  1903  	BTFSC STATUS,Z
+048D  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+048E  0856  	MOVF CompTempVar85, W
+048F  00D4  	MOVWF _mul_16_16_00000_arg_b
+0490  0857  	MOVF CompTempVar86, W
+0491  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+0492        label268436344
+0492  226A  	CALL _mul_16_16_00000
+0493  0949  	COMF CompTempVarRet0, W
+0494  00D8  	MOVWF CompTempVar87
+0495  094A  	COMF CompTempVarRet0+D'1', W
+0496  00D9  	MOVWF CompTempVar88
+0497  0AD8  	INCF CompTempVar87, F
+0498  1903  	BTFSC STATUS,Z
+0499  0AD9  	INCF CompTempVar88, F
+049A  2CA8  	GOTO	label268436348
+049B        label268436345
+049B  0830  	MOVF gbl_Kdif, W
+049C  00D2  	MOVWF _mul_16_16_00000_arg_a
+049D  0831  	MOVF gbl_Kdif+D'1', W
+049E  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+049F  0856  	MOVF CompTempVar85, W
+04A0  00D4  	MOVWF _mul_16_16_00000_arg_b
+04A1  0857  	MOVF CompTempVar86, W
+04A2  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+04A3        label268436342
+04A3  226A  	CALL _mul_16_16_00000
+04A4  0849  	MOVF CompTempVarRet0, W
+04A5  00D8  	MOVWF CompTempVar87
+04A6  084A  	MOVF CompTempVarRet0+D'1', W
+04A7  00D9  	MOVWF CompTempVar88
+04A8        label268436348
+04A8  0858  	MOVF CompTempVar87, W
+04A9  0724  	ADDWF gbl_CVLeft, W
+04AA  00DA  	MOVWF CompTempVar89
+04AB  0859  	MOVF CompTempVar88, W
+04AC  00DB  	MOVWF CompTempVar90
+04AD  0825  	MOVF gbl_CVLeft+D'1', W
+04AE  1803  	BTFSC STATUS,C
+04AF  0ADB  	INCF CompTempVar90, F
+04B0  07DB  	ADDWF CompTempVar90, F
+04B1  085A  	MOVF CompTempVar89, W
+04B2  00A4  	MOVWF gbl_CVLeft
+04B3  085B  	MOVF CompTempVar90, W
+04B4  00A5  	MOVWF gbl_CVLeft+D'1'
+
+
+		//Integral Part
+		if (SetPoint>=0) 	ISum=ISum + (PVRight-PVLeft) + Bias;
+04B5  0821  	MOVF gbl_SetPoint+D'1', W
+04B6  3A80  	XORLW 0x80
+04B7  00D2  	MOVWF CompTempVar91
+04B8  3080  	MOVLW	0x80
+04B9  0252  	SUBWF CompTempVar91, W
+04BA  1D03  	BTFSS STATUS,Z
+04BB  2CBE  	GOTO	label268436352
+04BC  3000  	MOVLW	0x00
+04BD  0220  	SUBWF gbl_SetPoint, W
+04BE        label268436352
+04BE  1C03  	BTFSS STATUS,C
+04BF  2CDF  	GOTO	label268436353
+04C0  082A  	MOVF gbl_PVLeft, W
+04C1  0228  	SUBWF gbl_PVRight, W
+04C2  00D2  	MOVWF CompTempVar92
+04C3  0A2B  	INCF gbl_PVLeft+D'1', W
+04C4  1803  	BTFSC STATUS,C
+04C5  082B  	MOVF gbl_PVLeft+D'1', W
+04C6  0229  	SUBWF gbl_PVRight+D'1', W
+04C7  00D3  	MOVWF CompTempVar93
+04C8  0852  	MOVF CompTempVar92, W
+04C9  073A  	ADDWF gbl_ISum, W
+04CA  00D4  	MOVWF CompTempVar94
+04CB  0853  	MOVF CompTempVar93, W
+04CC  00D5  	MOVWF CompTempVar95
+04CD  083B  	MOVF gbl_ISum+D'1', W
+04CE  1803  	BTFSC STATUS,C
+04CF  0AD5  	INCF CompTempVar95, F
+04D0  07D5  	ADDWF CompTempVar95, F
+04D1  083C  	MOVF gbl_Bias, W
+04D2  0754  	ADDWF CompTempVar94, W
+04D3  00D6  	MOVWF CompTempVar96
+04D4  083D  	MOVF gbl_Bias+D'1', W
+04D5  00D7  	MOVWF CompTempVar97
+04D6  0855  	MOVF CompTempVar95, W
+04D7  1803  	BTFSC STATUS,C
+04D8  0AD7  	INCF CompTempVar97, F
+04D9  07D7  	ADDWF CompTempVar97, F
+04DA  0856  	MOVF CompTempVar96, W
+04DB  00BA  	MOVWF gbl_ISum
+04DC  0857  	MOVF CompTempVar97, W
+04DD  00BB  	MOVWF gbl_ISum+D'1'
+04DF        label268436353
+
+		else				ISum=ISum + (PVRight-PVLeft) - Bias;
+04DE  2CFC  	GOTO	label268436365
+04DF  082A  	MOVF gbl_PVLeft, W
+04E0  0228  	SUBWF gbl_PVRight, W
+04E1  00D2  	MOVWF CompTempVar98
+04E2  0A2B  	INCF gbl_PVLeft+D'1', W
+04E3  1803  	BTFSC STATUS,C
+04E4  082B  	MOVF gbl_PVLeft+D'1', W
+04E5  0229  	SUBWF gbl_PVRight+D'1', W
+04E6  00D3  	MOVWF CompTempVar99
+04E7  0852  	MOVF CompTempVar98, W
+04E8  073A  	ADDWF gbl_ISum, W
+04E9  00D4  	MOVWF CompTempVar100
+04EA  0853  	MOVF CompTempVar99, W
+04EB  00D5  	MOVWF CompTempVar101
+04EC  083B  	MOVF gbl_ISum+D'1', W
+04ED  1803  	BTFSC STATUS,C
+04EE  0AD5  	INCF CompTempVar101, F
+04EF  07D5  	ADDWF CompTempVar101, F
+04F0  083C  	MOVF gbl_Bias, W
+04F1  0254  	SUBWF CompTempVar100, W
+04F2  00D6  	MOVWF CompTempVar102
+04F3  0A3D  	INCF gbl_Bias+D'1', W
+04F4  1803  	BTFSC STATUS,C
+04F5  083D  	MOVF gbl_Bias+D'1', W
+04F6  0255  	SUBWF CompTempVar101, W
+04F7  00D7  	MOVWF CompTempVar103
+04F8  0856  	MOVF CompTempVar102, W
+04F9  00BA  	MOVWF gbl_ISum
+04FA  0857  	MOVF CompTempVar103, W
+04FB  00BB  	MOVWF gbl_ISum+D'1'
+04FC        label268436365
+
+		CVRight=CVRight - Kint*ISum;
+04FC  01D7  	CLRF CompTempVar105
+04FD  1FBA  	BTFSS gbl_ISum,7
+04FE  2D1E  	GOTO	label268436389
+04FF  1FAE  	BTFSS gbl_Kint,7
+0500  2D10  	GOTO	label268436390
+0501  092E  	COMF gbl_Kint, W
+0502  00D2  	MOVWF _mul_16_16_00000_arg_a
+0503  092F  	COMF gbl_Kint+D'1', W
+0504  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0505  0AD2  	INCF _mul_16_16_00000_arg_a, F
+0506  1903  	BTFSC STATUS,Z
+0507  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+0508  093A  	COMF gbl_ISum, W
+0509  00D4  	MOVWF _mul_16_16_00000_arg_b
+050A  093B  	COMF gbl_ISum+D'1', W
+050B  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+050C  0AD4  	INCF _mul_16_16_00000_arg_b, F
+050D  1903  	BTFSC STATUS,Z
+050E  0AD5  	INCF _mul_16_16_00000_arg_b+D'1', F
+050F  2D3C  	GOTO	label268436393
+0510        label268436390
+0510  1FBA  	BTFSS gbl_ISum,7
+0511  2D1E  	GOTO	label268436389
+0512  082E  	MOVF gbl_Kint, W
+0513  00D2  	MOVWF _mul_16_16_00000_arg_a
+0514  082F  	MOVF gbl_Kint+D'1', W
+0515  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0516  093A  	COMF gbl_ISum, W
+0517  00D4  	MOVWF _mul_16_16_00000_arg_b
+0518  093B  	COMF gbl_ISum+D'1', W
+0519  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+051A  0AD4  	INCF _mul_16_16_00000_arg_b, F
+051B  1903  	BTFSC STATUS,Z
+051C  0AD5  	INCF _mul_16_16_00000_arg_b+D'1', F
+051D  2D2B  	GOTO	label268436395
+051E        label268436389
+051E  1FAE  	BTFSS gbl_Kint,7
+051F  2D34  	GOTO	label268436396
+0520  092E  	COMF gbl_Kint, W
+0521  00D2  	MOVWF _mul_16_16_00000_arg_a
+0522  092F  	COMF gbl_Kint+D'1', W
+0523  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0524  0AD2  	INCF _mul_16_16_00000_arg_a, F
+0525  1903  	BTFSC STATUS,Z
+0526  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+0527  083A  	MOVF gbl_ISum, W
+0528  00D4  	MOVWF _mul_16_16_00000_arg_b
+0529  083B  	MOVF gbl_ISum+D'1', W
+052A  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+052B        label268436395
+052B  226A  	CALL _mul_16_16_00000
+052C  0949  	COMF CompTempVarRet0, W
+052D  00D6  	MOVWF CompTempVar104
+052E  094A  	COMF CompTempVarRet0+D'1', W
+052F  00D7  	MOVWF CompTempVar105
+0530  0AD6  	INCF CompTempVar104, F
+0531  1903  	BTFSC STATUS,Z
+0532  0AD7  	INCF CompTempVar105, F
+0533  2D41  	GOTO	label268436399
+0534        label268436396
+0534  082E  	MOVF gbl_Kint, W
+0535  00D2  	MOVWF _mul_16_16_00000_arg_a
+0536  082F  	MOVF gbl_Kint+D'1', W
+0537  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0538  083A  	MOVF gbl_ISum, W
+0539  00D4  	MOVWF _mul_16_16_00000_arg_b
+053A  083B  	MOVF gbl_ISum+D'1', W
+053B  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+053C        label268436393
+053C  226A  	CALL _mul_16_16_00000
+053D  0849  	MOVF CompTempVarRet0, W
+053E  00D6  	MOVWF CompTempVar104
+053F  084A  	MOVF CompTempVarRet0+D'1', W
+0540  00D7  	MOVWF CompTempVar105
+0541        label268436399
+0541  0856  	MOVF CompTempVar104, W
+0542  0222  	SUBWF gbl_CVRight, W
+0543  00D8  	MOVWF CompTempVar106
+0544  0A57  	INCF CompTempVar105, W
+0545  1803  	BTFSC STATUS,C
+0546  0857  	MOVF CompTempVar105, W
+0547  0223  	SUBWF gbl_CVRight+D'1', W
+0548  00D9  	MOVWF CompTempVar107
+0549  0858  	MOVF CompTempVar106, W
+054A  00A2  	MOVWF gbl_CVRight
+054B  0859  	MOVF CompTempVar107, W
+054C  00A3  	MOVWF gbl_CVRight+D'1'
+
+		CVLeft=CVLeft + Kint*ISum; 
+054D  01D7  	CLRF CompTempVar109
+054E  1FBA  	BTFSS gbl_ISum,7
+054F  2D6F  	GOTO	label268436414
+0550  1FAE  	BTFSS gbl_Kint,7
+0551  2D61  	GOTO	label268436415
+0552  092E  	COMF gbl_Kint, W
+0553  00D2  	MOVWF _mul_16_16_00000_arg_a
+0554  092F  	COMF gbl_Kint+D'1', W
+0555  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0556  0AD2  	INCF _mul_16_16_00000_arg_a, F
+0557  1903  	BTFSC STATUS,Z
+0558  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+0559  093A  	COMF gbl_ISum, W
+055A  00D4  	MOVWF _mul_16_16_00000_arg_b
+055B  093B  	COMF gbl_ISum+D'1', W
+055C  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+055D  0AD4  	INCF _mul_16_16_00000_arg_b, F
+055E  1903  	BTFSC STATUS,Z
+055F  0AD5  	INCF _mul_16_16_00000_arg_b+D'1', F
+0560  2D8D  	GOTO	label268436418
+0561        label268436415
+0561  1FBA  	BTFSS gbl_ISum,7
+0562  2D6F  	GOTO	label268436414
+0563  082E  	MOVF gbl_Kint, W
+0564  00D2  	MOVWF _mul_16_16_00000_arg_a
+0565  082F  	MOVF gbl_Kint+D'1', W
+0566  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0567  093A  	COMF gbl_ISum, W
+0568  00D4  	MOVWF _mul_16_16_00000_arg_b
+0569  093B  	COMF gbl_ISum+D'1', W
+056A  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+056B  0AD4  	INCF _mul_16_16_00000_arg_b, F
+056C  1903  	BTFSC STATUS,Z
+056D  0AD5  	INCF _mul_16_16_00000_arg_b+D'1', F
+056E  2D7C  	GOTO	label268436420
+056F        label268436414
+056F  1FAE  	BTFSS gbl_Kint,7
+0570  2D85  	GOTO	label268436421
+0571  092E  	COMF gbl_Kint, W
+0572  00D2  	MOVWF _mul_16_16_00000_arg_a
+0573  092F  	COMF gbl_Kint+D'1', W
+0574  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0575  0AD2  	INCF _mul_16_16_00000_arg_a, F
+0576  1903  	BTFSC STATUS,Z
+0577  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+0578  083A  	MOVF gbl_ISum, W
+0579  00D4  	MOVWF _mul_16_16_00000_arg_b
+057A  083B  	MOVF gbl_ISum+D'1', W
+057B  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+057C        label268436420
+057C  226A  	CALL _mul_16_16_00000
+057D  0949  	COMF CompTempVarRet0, W
+057E  00D6  	MOVWF CompTempVar108
+057F  094A  	COMF CompTempVarRet0+D'1', W
+0580  00D7  	MOVWF CompTempVar109
+0581  0AD6  	INCF CompTempVar108, F
+0582  1903  	BTFSC STATUS,Z
+0583  0AD7  	INCF CompTempVar109, F
+0584  2D92  	GOTO	label268436424
+0585        label268436421
+0585  082E  	MOVF gbl_Kint, W
+0586  00D2  	MOVWF _mul_16_16_00000_arg_a
+0587  082F  	MOVF gbl_Kint+D'1', W
+0588  00D3  	MOVWF _mul_16_16_00000_arg_a+D'1'
+0589  083A  	MOVF gbl_ISum, W
+058A  00D4  	MOVWF _mul_16_16_00000_arg_b
+058B  083B  	MOVF gbl_ISum+D'1', W
+058C  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+058D        label268436418
+058D  226A  	CALL _mul_16_16_00000
+058E  0849  	MOVF CompTempVarRet0, W
+058F  00D6  	MOVWF CompTempVar108
+0590  084A  	MOVF CompTempVarRet0+D'1', W
+0591  00D7  	MOVWF CompTempVar109
+0592        label268436424
+0592  0856  	MOVF CompTempVar108, W
+0593  0724  	ADDWF gbl_CVLeft, W
+0594  00D8  	MOVWF CompTempVar110
+0595  0857  	MOVF CompTempVar109, W
+0596  00D9  	MOVWF CompTempVar111
+0597  0825  	MOVF gbl_CVLeft+D'1', W
+0598  1803  	BTFSC STATUS,C
+0599  0AD9  	INCF CompTempVar111, F
+059A  07D9  	ADDWF CompTempVar111, F
+059B  0858  	MOVF CompTempVar110, W
+059C  00A4  	MOVWF gbl_CVLeft
+059D  0859  	MOVF CompTempVar111, W
+059E  00A5  	MOVWF gbl_CVLeft+D'1'
+
+
+
+		//Limits control. Due to the PWM frecuency (10Khz), the maximum resolution 
+		//allowed for the counter register by the micro is 8 bits (0-255). As we are 
+		//working with units/UnitDiv, the limit then for CVRight & CVLeft are -255*UnitDiv...+25500*UnitDiv
+		if (CVRight>(255*UnitDiv)) CVRight=255*UnitDiv;
+059F  01D4  	CLRF CompTempVar114
+05A0  1FBE  	BTFSS gbl_UnitDiv,7
+05A1  2DAF  	GOTO	label268436427
+05A2  2DA3  	GOTO	label268436428
+05A3        label268436428
+05A3  1FBE  	BTFSS gbl_UnitDiv,7
+05A4  2DAF  	GOTO	label268436427
+05A5  30FF  	MOVLW	0xFF
+05A6  00CB  	MOVWF _mul_8_16_00000_arg_a
+05A7  093E  	COMF gbl_UnitDiv, W
+05A8  00CC  	MOVWF _mul_8_16_00000_arg_b
+05A9  093F  	COMF gbl_UnitDiv+D'1', W
+05AA  00CD  	MOVWF _mul_8_16_00000_arg_b+D'1'
+05AB  0ACC  	INCF _mul_8_16_00000_arg_b, F
+05AC  1903  	BTFSC STATUS,Z
+05AD  0ACD  	INCF _mul_8_16_00000_arg_b+D'1', F
+05AE  2DB0  	GOTO	label268436432
+05AF        label268436427
+05AF  2DB9  	GOTO	label268436433
+05B0        label268436432
+05B0  2287  	CALL _mul_8_16_00000
+05B1  0949  	COMF CompTempVarRet0, W
+05B2  00D3  	MOVWF CompTempVar113
+05B3  094A  	COMF CompTempVarRet0+D'1', W
+05B4  00D4  	MOVWF CompTempVar114
+05B5  0AD3  	INCF CompTempVar113, F
+05B6  1903  	BTFSC STATUS,Z
+05B7  0AD4  	INCF CompTempVar114, F
+05B8  2DC4  	GOTO	label268436436
+05B9        label268436433
+05B9  30FF  	MOVLW	0xFF
+05BA  00CB  	MOVWF _mul_8_16_00000_arg_a
+05BB  083E  	MOVF gbl_UnitDiv, W
+05BC  00CC  	MOVWF _mul_8_16_00000_arg_b
+05BD  083F  	MOVF gbl_UnitDiv+D'1', W
+05BE  00CD  	MOVWF _mul_8_16_00000_arg_b+D'1'
+05BF  2287  	CALL _mul_8_16_00000
+05C0  0849  	MOVF CompTempVarRet0, W
+05C1  00D3  	MOVWF CompTempVar113
+05C2  084A  	MOVF CompTempVarRet0+D'1', W
+05C3  00D4  	MOVWF CompTempVar114
+05C4        label268436436
+05C4  0854  	MOVF CompTempVar114, W
+05C5  3A80  	XORLW 0x80
+05C6  00D2  	MOVWF CompTempVar112
+05C7  0823  	MOVF gbl_CVRight+D'1', W
+05C8  3A80  	XORLW 0x80
+05C9  0252  	SUBWF CompTempVar112, W
+05CA  1D03  	BTFSS STATUS,Z
+05CB  2DCE  	GOTO	label268436439
+05CC  0822  	MOVF gbl_CVRight, W
+05CD  0253  	SUBWF CompTempVar113, W
+05CE        label268436439
+05CE  1803  	BTFSC STATUS,C
+05CF  2DF9  	GOTO	label268436440
+05D0  01D3  	CLRF CompTempVar116
+05D1  1FBE  	BTFSS gbl_UnitDiv,7
+05D2  2DE0  	GOTO	label268436453
+05D3  2DD4  	GOTO	label268436454
+05D4        label268436454
+05D4  1FBE  	BTFSS gbl_UnitDiv,7
+05D5  2DE0  	GOTO	label268436453
+05D6  30FF  	MOVLW	0xFF
+05D7  00CB  	MOVWF _mul_8_16_00000_arg_a
+05D8  093E  	COMF gbl_UnitDiv, W
+05D9  00CC  	MOVWF _mul_8_16_00000_arg_b
+05DA  093F  	COMF gbl_UnitDiv+D'1', W
+05DB  00CD  	MOVWF _mul_8_16_00000_arg_b+D'1'
+05DC  0ACC  	INCF _mul_8_16_00000_arg_b, F
+05DD  1903  	BTFSC STATUS,Z
+05DE  0ACD  	INCF _mul_8_16_00000_arg_b+D'1', F
+05DF  2DE1  	GOTO	label268436458
+05E0        label268436453
+05E0  2DEA  	GOTO	label268436459
+05E1        label268436458
+05E1  2287  	CALL _mul_8_16_00000
+05E2  0949  	COMF CompTempVarRet0, W
+05E3  00D2  	MOVWF CompTempVar115
+05E4  094A  	COMF CompTempVarRet0+D'1', W
+05E5  00D3  	MOVWF CompTempVar116
+05E6  0AD2  	INCF CompTempVar115, F
+05E7  1903  	BTFSC STATUS,Z
+05E8  0AD3  	INCF CompTempVar116, F
+05E9  2DF5  	GOTO	label268436461
+05EA        label268436459
+05EA  30FF  	MOVLW	0xFF
+05EB  00CB  	MOVWF _mul_8_16_00000_arg_a
+05EC  083E  	MOVF gbl_UnitDiv, W
+05ED  00CC  	MOVWF _mul_8_16_00000_arg_b
+05EE  083F  	MOVF gbl_UnitDiv+D'1', W
+05EF  00CD  	MOVWF _mul_8_16_00000_arg_b+D'1'
+05F0  2287  	CALL _mul_8_16_00000
+05F1  0849  	MOVF CompTempVarRet0, W
+05F2  00D2  	MOVWF CompTempVar115
+05F3  084A  	MOVF CompTempVarRet0+D'1', W
+05F4  00D3  	MOVWF CompTempVar116
+05F5        label268436461
+05F5  0852  	MOVF CompTempVar115, W
+05F6  00A2  	MOVWF gbl_CVRight
+05F7  0853  	MOVF CompTempVar116, W
+05F8  00A3  	MOVWF gbl_CVRight+D'1'
+05F9        label268436440
+
+		if (CVRight<-(255*UnitDiv)) CVRight=-255*UnitDiv;
+05F9  01CF  	CLRF CompTempVar59
+05FA  1FBE  	BTFSS gbl_UnitDiv,7
+05FB  2E09  	GOTO	label268436462
+05FC  2DFD  	GOTO	label268436463
+05FD        label268436463
+05FD  1FBE  	BTFSS gbl_UnitDiv,7
+05FE  2E09  	GOTO	label268436462
+05FF  30FF  	MOVLW	0xFF
+0600  00CB  	MOVWF _mul_8_16_00000_arg_a
+0601  093E  	COMF gbl_UnitDiv, W
+0602  00CC  	MOVWF _mul_8_16_00000_arg_b
+0603  093F  	COMF gbl_UnitDiv+D'1', W
+0604  00CD  	MOVWF _mul_8_16_00000_arg_b+D'1'
+0605  0ACC  	INCF _mul_8_16_00000_arg_b, F
+0606  1903  	BTFSC STATUS,Z
+0607  0ACD  	INCF _mul_8_16_00000_arg_b+D'1', F
+0608  2E0A  	GOTO	label268436467
+0609        label268436462
+0609  2E13  	GOTO	label268436468
+060A        label268436467
+060A  2287  	CALL _mul_8_16_00000
+060B  0949  	COMF CompTempVarRet0, W
+060C  00CE  	MOVWF CompTempVar58
+060D  094A  	COMF CompTempVarRet0+D'1', W
+060E  00CF  	MOVWF CompTempVar59
+060F  0ACE  	INCF CompTempVar58, F
+0610  1903  	BTFSC STATUS,Z
+0611  0ACF  	INCF CompTempVar59, F
+0612  2E1E  	GOTO	label268436470
+0613        label268436468
+0613  30FF  	MOVLW	0xFF
+0614  00CB  	MOVWF _mul_8_16_00000_arg_a
+0615  083E  	MOVF gbl_UnitDiv, W
+0616  00CC  	MOVWF _mul_8_16_00000_arg_b
+0617  083F  	MOVF gbl_UnitDiv+D'1', W
+0618  00CD  	MOVWF _mul_8_16_00000_arg_b+D'1'
+0619  2287  	CALL _mul_8_16_00000
+061A  0849  	MOVF CompTempVarRet0, W
+061B  00CE  	MOVWF CompTempVar58
+061C  084A  	MOVF CompTempVarRet0+D'1', W
+061D  00CF  	MOVWF CompTempVar59
+061E        label268436470
+061E  094E  	COMF CompTempVar58, W
+061F  00D3  	MOVWF CompTempVar118
+0620  094F  	COMF CompTempVar59, W
+0621  00D4  	MOVWF CompTempVar119
+0622  0AD3  	INCF CompTempVar118, F
+0623  1903  	BTFSC STATUS,Z
+0624  0AD4  	INCF CompTempVar119, F
+0625  0823  	MOVF gbl_CVRight+D'1', W
+0626  3A80  	XORLW 0x80
+0627  00D2  	MOVWF CompTempVar117
+0628  0854  	MOVF CompTempVar119, W
+0629  3A80  	XORLW 0x80
+062A  0252  	SUBWF CompTempVar117, W
+062B  1D03  	BTFSS STATUS,Z
+062C  2E2F  	GOTO	label268436476
+062D  0853  	MOVF CompTempVar118, W
+062E  0222  	SUBWF gbl_CVRight, W
+062F        label268436476
+062F  1803  	BTFSC STATUS,C
+0630  2E5E  	GOTO	label268436477
+0631  01D7  	CLRF CompTempVar121
+0632  1FBE  	BTFSS gbl_UnitDiv,7
+0633  2E42  	GOTO	label268436490
+0634  30FE  	MOVLW	0xFE
+0635  00D2  	MOVWF _mul_16_16_00000_arg_a
+0636  01D3  	CLRF _mul_16_16_00000_arg_a+D'1'
+0637  0AD2  	INCF _mul_16_16_00000_arg_a, F
+0638  1903  	BTFSC STATUS,Z
+0639  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+063A  093E  	COMF gbl_UnitDiv, W
+063B  00D4  	MOVWF _mul_16_16_00000_arg_b
+063C  093F  	COMF gbl_UnitDiv+D'1', W
+063D  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+063E  0AD4  	INCF _mul_16_16_00000_arg_b, F
+063F  1903  	BTFSC STATUS,Z
+0640  0AD5  	INCF _mul_16_16_00000_arg_b+D'1', F
+0641  2E55  	GOTO	label268436493
+0642        label268436490
+0642  30FE  	MOVLW	0xFE
+0643  00D2  	MOVWF _mul_16_16_00000_arg_a
+0644  01D3  	CLRF _mul_16_16_00000_arg_a+D'1'
+0645  0AD2  	INCF _mul_16_16_00000_arg_a, F
+0646  1903  	BTFSC STATUS,Z
+0647  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+0648  083E  	MOVF gbl_UnitDiv, W
+0649  00D4  	MOVWF _mul_16_16_00000_arg_b
+064A  083F  	MOVF gbl_UnitDiv+D'1', W
+064B  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+064C  226A  	CALL _mul_16_16_00000
+064D  0949  	COMF CompTempVarRet0, W
+064E  00D6  	MOVWF CompTempVar120
+064F  094A  	COMF CompTempVarRet0+D'1', W
+0650  00D7  	MOVWF CompTempVar121
+0651  0AD6  	INCF CompTempVar120, F
+0652  1903  	BTFSC STATUS,Z
+0653  0AD7  	INCF CompTempVar121, F
+0654  2E5A  	GOTO	label268436499
+0655        label268436493
+0655  226A  	CALL _mul_16_16_00000
+0656  0849  	MOVF CompTempVarRet0, W
+0657  00D6  	MOVWF CompTempVar120
+0658  084A  	MOVF CompTempVarRet0+D'1', W
+0659  00D7  	MOVWF CompTempVar121
+065A        label268436499
+065A  0856  	MOVF CompTempVar120, W
+065B  00A2  	MOVWF gbl_CVRight
+065C  0857  	MOVF CompTempVar121, W
+065D  00A3  	MOVWF gbl_CVRight+D'1'
+065E        label268436477
+
+		if (CVLeft>(255*UnitDiv)) CVLeft=255*UnitDiv;
+065E  01D4  	CLRF CompTempVar124
+065F  1FBE  	BTFSS gbl_UnitDiv,7
+0660  2E6E  	GOTO	label268436502
+0661  2E62  	GOTO	label268436503
+0662        label268436503
+0662  1FBE  	BTFSS gbl_UnitDiv,7
+0663  2E6E  	GOTO	label268436502
+0664  30FF  	MOVLW	0xFF
+0665  00CB  	MOVWF _mul_8_16_00000_arg_a
+0666  093E  	COMF gbl_UnitDiv, W
+0667  00CC  	MOVWF _mul_8_16_00000_arg_b
+0668  093F  	COMF gbl_UnitDiv+D'1', W
+0669  00CD  	MOVWF _mul_8_16_00000_arg_b+D'1'
+066A  0ACC  	INCF _mul_8_16_00000_arg_b, F
+066B  1903  	BTFSC STATUS,Z
+066C  0ACD  	INCF _mul_8_16_00000_arg_b+D'1', F
+066D  2E6F  	GOTO	label268436507
+066E        label268436502
+066E  2E78  	GOTO	label268436508
+066F        label268436507
+066F  2287  	CALL _mul_8_16_00000
+0670  0949  	COMF CompTempVarRet0, W
+0671  00D3  	MOVWF CompTempVar123
+0672  094A  	COMF CompTempVarRet0+D'1', W
+0673  00D4  	MOVWF CompTempVar124
+0674  0AD3  	INCF CompTempVar123, F
+0675  1903  	BTFSC STATUS,Z
+0676  0AD4  	INCF CompTempVar124, F
+0677  2E83  	GOTO	label268436511
+0678        label268436508
+0678  30FF  	MOVLW	0xFF
+0679  00CB  	MOVWF _mul_8_16_00000_arg_a
+067A  083E  	MOVF gbl_UnitDiv, W
+067B  00CC  	MOVWF _mul_8_16_00000_arg_b
+067C  083F  	MOVF gbl_UnitDiv+D'1', W
+067D  00CD  	MOVWF _mul_8_16_00000_arg_b+D'1'
+067E  2287  	CALL _mul_8_16_00000
+067F  0849  	MOVF CompTempVarRet0, W
+0680  00D3  	MOVWF CompTempVar123
+0681  084A  	MOVF CompTempVarRet0+D'1', W
+0682  00D4  	MOVWF CompTempVar124
+0683        label268436511
+0683  0854  	MOVF CompTempVar124, W
+0684  3A80  	XORLW 0x80
+0685  00D2  	MOVWF CompTempVar122
+0686  0825  	MOVF gbl_CVLeft+D'1', W
+0687  3A80  	XORLW 0x80
+0688  0252  	SUBWF CompTempVar122, W
+0689  1D03  	BTFSS STATUS,Z
+068A  2E8D  	GOTO	label268436514
+068B  0824  	MOVF gbl_CVLeft, W
+068C  0253  	SUBWF CompTempVar123, W
+068D        label268436514
+068D  1803  	BTFSC STATUS,C
+068E  2EB8  	GOTO	label268436515
+068F  01D3  	CLRF CompTempVar126
+0690  1FBE  	BTFSS gbl_UnitDiv,7
+0691  2E9F  	GOTO	label268436528
+0692  2E93  	GOTO	label268436529
+0693        label268436529
+0693  1FBE  	BTFSS gbl_UnitDiv,7
+0694  2E9F  	GOTO	label268436528
+0695  30FF  	MOVLW	0xFF
+0696  00CB  	MOVWF _mul_8_16_00000_arg_a
+0697  093E  	COMF gbl_UnitDiv, W
+0698  00CC  	MOVWF _mul_8_16_00000_arg_b
+0699  093F  	COMF gbl_UnitDiv+D'1', W
+069A  00CD  	MOVWF _mul_8_16_00000_arg_b+D'1'
+069B  0ACC  	INCF _mul_8_16_00000_arg_b, F
+069C  1903  	BTFSC STATUS,Z
+069D  0ACD  	INCF _mul_8_16_00000_arg_b+D'1', F
+069E  2EA0  	GOTO	label268436533
+069F        label268436528
+069F  2EA9  	GOTO	label268436534
+06A0        label268436533
+06A0  2287  	CALL _mul_8_16_00000
+06A1  0949  	COMF CompTempVarRet0, W
+06A2  00D2  	MOVWF CompTempVar125
+06A3  094A  	COMF CompTempVarRet0+D'1', W
+06A4  00D3  	MOVWF CompTempVar126
+06A5  0AD2  	INCF CompTempVar125, F
+06A6  1903  	BTFSC STATUS,Z
+06A7  0AD3  	INCF CompTempVar126, F
+06A8  2EB4  	GOTO	label268436536
+06A9        label268436534
+06A9  30FF  	MOVLW	0xFF
+06AA  00CB  	MOVWF _mul_8_16_00000_arg_a
+06AB  083E  	MOVF gbl_UnitDiv, W
+06AC  00CC  	MOVWF _mul_8_16_00000_arg_b
+06AD  083F  	MOVF gbl_UnitDiv+D'1', W
+06AE  00CD  	MOVWF _mul_8_16_00000_arg_b+D'1'
+06AF  2287  	CALL _mul_8_16_00000
+06B0  0849  	MOVF CompTempVarRet0, W
+06B1  00D2  	MOVWF CompTempVar125
+06B2  084A  	MOVF CompTempVarRet0+D'1', W
+06B3  00D3  	MOVWF CompTempVar126
+06B4        label268436536
+06B4  0852  	MOVF CompTempVar125, W
+06B5  00A4  	MOVWF gbl_CVLeft
+06B6  0853  	MOVF CompTempVar126, W
+06B7  00A5  	MOVWF gbl_CVLeft+D'1'
+06B8        label268436515
+
+		if (CVLeft<-(255*UnitDiv)) CVLeft=-255*UnitDiv;
+06B8  01D1  	CLRF CompTempVar61
+06B9  1FBE  	BTFSS gbl_UnitDiv,7
+06BA  2EC8  	GOTO	label268436537
+06BB  2EBC  	GOTO	label268436538
+06BC        label268436538
+06BC  1FBE  	BTFSS gbl_UnitDiv,7
+06BD  2EC8  	GOTO	label268436537
+06BE  30FF  	MOVLW	0xFF
+06BF  00CB  	MOVWF _mul_8_16_00000_arg_a
+06C0  093E  	COMF gbl_UnitDiv, W
+06C1  00CC  	MOVWF _mul_8_16_00000_arg_b
+06C2  093F  	COMF gbl_UnitDiv+D'1', W
+06C3  00CD  	MOVWF _mul_8_16_00000_arg_b+D'1'
+06C4  0ACC  	INCF _mul_8_16_00000_arg_b, F
+06C5  1903  	BTFSC STATUS,Z
+06C6  0ACD  	INCF _mul_8_16_00000_arg_b+D'1', F
+06C7  2EC9  	GOTO	label268436542
+06C8        label268436537
+06C8  2ED2  	GOTO	label268436543
+06C9        label268436542
+06C9  2287  	CALL _mul_8_16_00000
+06CA  0949  	COMF CompTempVarRet0, W
+06CB  00D0  	MOVWF CompTempVar60
+06CC  094A  	COMF CompTempVarRet0+D'1', W
+06CD  00D1  	MOVWF CompTempVar61
+06CE  0AD0  	INCF CompTempVar60, F
+06CF  1903  	BTFSC STATUS,Z
+06D0  0AD1  	INCF CompTempVar61, F
+06D1  2EDD  	GOTO	label268436545
+06D2        label268436543
+06D2  30FF  	MOVLW	0xFF
+06D3  00CB  	MOVWF _mul_8_16_00000_arg_a
+06D4  083E  	MOVF gbl_UnitDiv, W
+06D5  00CC  	MOVWF _mul_8_16_00000_arg_b
+06D6  083F  	MOVF gbl_UnitDiv+D'1', W
+06D7  00CD  	MOVWF _mul_8_16_00000_arg_b+D'1'
+06D8  2287  	CALL _mul_8_16_00000
+06D9  0849  	MOVF CompTempVarRet0, W
+06DA  00D0  	MOVWF CompTempVar60
+06DB  084A  	MOVF CompTempVarRet0+D'1', W
+06DC  00D1  	MOVWF CompTempVar61
+06DD        label268436545
+06DD  0950  	COMF CompTempVar60, W
+06DE  00D3  	MOVWF CompTempVar128
+06DF  0951  	COMF CompTempVar61, W
+06E0  00D4  	MOVWF CompTempVar129
+06E1  0AD3  	INCF CompTempVar128, F
+06E2  1903  	BTFSC STATUS,Z
+06E3  0AD4  	INCF CompTempVar129, F
+06E4  0825  	MOVF gbl_CVLeft+D'1', W
+06E5  3A80  	XORLW 0x80
+06E6  00D2  	MOVWF CompTempVar127
+06E7  0854  	MOVF CompTempVar129, W
+06E8  3A80  	XORLW 0x80
+06E9  0252  	SUBWF CompTempVar127, W
+06EA  1D03  	BTFSS STATUS,Z
+06EB  2EEE  	GOTO	label268436551
+06EC  0853  	MOVF CompTempVar128, W
+06ED  0224  	SUBWF gbl_CVLeft, W
+06EE        label268436551
+06EE  1803  	BTFSC STATUS,C
+06EF  2F1D  	GOTO	label268436552
+06F0  01D7  	CLRF CompTempVar131
+06F1  1FBE  	BTFSS gbl_UnitDiv,7
+06F2  2F01  	GOTO	label268436565
+06F3  30FE  	MOVLW	0xFE
+06F4  00D2  	MOVWF _mul_16_16_00000_arg_a
+06F5  01D3  	CLRF _mul_16_16_00000_arg_a+D'1'
+06F6  0AD2  	INCF _mul_16_16_00000_arg_a, F
+06F7  1903  	BTFSC STATUS,Z
+06F8  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+06F9  093E  	COMF gbl_UnitDiv, W
+06FA  00D4  	MOVWF _mul_16_16_00000_arg_b
+06FB  093F  	COMF gbl_UnitDiv+D'1', W
+06FC  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+06FD  0AD4  	INCF _mul_16_16_00000_arg_b, F
+06FE  1903  	BTFSC STATUS,Z
+06FF  0AD5  	INCF _mul_16_16_00000_arg_b+D'1', F
+0700  2F14  	GOTO	label268436568
+0701        label268436565
+0701  30FE  	MOVLW	0xFE
+0702  00D2  	MOVWF _mul_16_16_00000_arg_a
+0703  01D3  	CLRF _mul_16_16_00000_arg_a+D'1'
+0704  0AD2  	INCF _mul_16_16_00000_arg_a, F
+0705  1903  	BTFSC STATUS,Z
+0706  0AD3  	INCF _mul_16_16_00000_arg_a+D'1', F
+0707  083E  	MOVF gbl_UnitDiv, W
+0708  00D4  	MOVWF _mul_16_16_00000_arg_b
+0709  083F  	MOVF gbl_UnitDiv+D'1', W
+070A  00D5  	MOVWF _mul_16_16_00000_arg_b+D'1'
+070B  226A  	CALL _mul_16_16_00000
+070C  0949  	COMF CompTempVarRet0, W
+070D  00D6  	MOVWF CompTempVar130
+070E  094A  	COMF CompTempVarRet0+D'1', W
+070F  00D7  	MOVWF CompTempVar131
+0710  0AD6  	INCF CompTempVar130, F
+0711  1903  	BTFSC STATUS,Z
+0712  0AD7  	INCF CompTempVar131, F
+0713  2F19  	GOTO	label268436574
+0714        label268436568
+0714  226A  	CALL _mul_16_16_00000
+0715  0849  	MOVF CompTempVarRet0, W
+0716  00D6  	MOVWF CompTempVar130
+0717  084A  	MOVF CompTempVarRet0+D'1', W
+0718  00D7  	MOVWF CompTempVar131
+0719        label268436574
+0719  0856  	MOVF CompTempVar130, W
+071A  00A4  	MOVWF gbl_CVLeft
+071B  0857  	MOVF CompTempVar131, W
+071C  00A5  	MOVWF gbl_CVLeft+D'1'
+071D        label268436552
+
+
+		SetPWM(CVRight, CVLeft);							//Set new PWM values for motor
+071D  0822  	MOVF gbl_CVRight, W
+071E  00D2  	MOVWF SetPWM_00000_arg_CVR
+071F  0823  	MOVF gbl_CVRight+D'1', W
+0720  00D3  	MOVWF SetPWM_00000_arg_CVR+D'1'
+0721  0824  	MOVF gbl_CVLeft, W
+0722  00D4  	MOVWF SetPWM_00000_arg_CVL
+0723  0825  	MOVF gbl_CVLeft+D'1', W
+0724  00D5  	MOVWF SetPWM_00000_arg_CVL+D'1'
+0725  20CF  	CALL SetPWM_00000
+
+ 
+		if (SendFeedback) //Sends through serial port the feedback values
+0726  1D43  	BTFSS gbl_SendFeedback,2
+0727  2FEA  	GOTO	label268436582
+07EA        label268436582
+
+		{
+			if (SetPoint >= 0) 	{serialSendDec(SetPoint);}		
+0728  0821  	MOVF gbl_SetPoint+D'1', W
+0729  3A80  	XORLW 0x80
+072A  00D2  	MOVWF CompTempVar132
+072B  3080  	MOVLW	0x80
+072C  0252  	SUBWF CompTempVar132, W
+072D  1D03  	BTFSS STATUS,Z
+072E  2F31  	GOTO	label268436587
+072F  3000  	MOVLW	0x00
+0730  0220  	SUBWF gbl_SetPoint, W
+0731        label268436587
+0731  1C03  	BTFSS STATUS,C
+0732  2F37  	GOTO	label268436588
+0733  0820  	MOVF gbl_SetPoint, W
+0734  00D2  	MOVWF serialSend_00006_arg_n
+0735  2084  	CALL serialSend_00006
+0737        label268436588
+
+			else 				{serialSendChar(45);serialSendDec(-SetPoint);}					
+0736  2F3E  	GOTO	label268436595
+0737  302D  	MOVLW	0x2D
+0738  00D8  	MOVWF serialSend_00002_arg_value
+0739  200D  	CALL serialSend_00002
+073A  0920  	COMF gbl_SetPoint, W
+073B  00D2  	MOVWF serialSend_00006_arg_n
+073C  0AD2  	INCF serialSend_00006_arg_n, F
+073D  2084  	CALL serialSend_00006
+073E        label268436595
+
+			serialSendChar(9);
+073E  3009  	MOVLW	0x09
+073F  00D8  	MOVWF serialSend_00002_arg_value
+0740  200D  	CALL serialSend_00002
+
+			if (PVLeft >= 0) 	{serialSendDec(PVLeft);}		
+0741  082B  	MOVF gbl_PVLeft+D'1', W
+0742  3A80  	XORLW 0x80
+0743  00D2  	MOVWF CompTempVar133
+0744  3080  	MOVLW	0x80
+0745  0252  	SUBWF CompTempVar133, W
+0746  1D03  	BTFSS STATUS,Z
+0747  2F4A  	GOTO	label268436611
+0748  3000  	MOVLW	0x00
+0749  022A  	SUBWF gbl_PVLeft, W
+074A        label268436611
+074A  1C03  	BTFSS STATUS,C
+074B  2F50  	GOTO	label268436612
+074C  082A  	MOVF gbl_PVLeft, W
+074D  00D2  	MOVWF serialSend_00006_arg_n
+074E  2084  	CALL serialSend_00006
+0750        label268436612
+
+			else 				{serialSendChar(45);serialSendDec(-PVLeft);}					
+074F  2F57  	GOTO	label268436619
+0750  302D  	MOVLW	0x2D
+0751  00D8  	MOVWF serialSend_00002_arg_value
+0752  200D  	CALL serialSend_00002
+0753  092A  	COMF gbl_PVLeft, W
+0754  00D2  	MOVWF serialSend_00006_arg_n
+0755  0AD2  	INCF serialSend_00006_arg_n, F
+0756  2084  	CALL serialSend_00006
+0757        label268436619
+
+			serialSendChar(9);
+0757  3009  	MOVLW	0x09
+0758  00D8  	MOVWF serialSend_00002_arg_value
+0759  200D  	CALL serialSend_00002
+
+			if (PVRight >= 0) 	{serialSendDec(PVRight);}		
+075A  0829  	MOVF gbl_PVRight+D'1', W
+075B  3A80  	XORLW 0x80
+075C  00D2  	MOVWF CompTempVar134
+075D  3080  	MOVLW	0x80
+075E  0252  	SUBWF CompTempVar134, W
+075F  1D03  	BTFSS STATUS,Z
+0760  2F63  	GOTO	label268436635
+0761  3000  	MOVLW	0x00
+0762  0228  	SUBWF gbl_PVRight, W
+0763        label268436635
+0763  1C03  	BTFSS STATUS,C
+0764  2F69  	GOTO	label268436636
+0765  0828  	MOVF gbl_PVRight, W
+0766  00D2  	MOVWF serialSend_00006_arg_n
+0767  2084  	CALL serialSend_00006
+0769        label268436636
+
+			else 				{serialSendChar(45);serialSendDec(-PVRight);}					
+0768  2F70  	GOTO	label268436643
+0769  302D  	MOVLW	0x2D
+076A  00D8  	MOVWF serialSend_00002_arg_value
+076B  200D  	CALL serialSend_00002
+076C  0928  	COMF gbl_PVRight, W
+076D  00D2  	MOVWF serialSend_00006_arg_n
+076E  0AD2  	INCF serialSend_00006_arg_n, F
+076F  2084  	CALL serialSend_00006
+0770        label268436643
+
+			serialSendChar(9);
+0770  3009  	MOVLW	0x09
+0771  00D8  	MOVWF serialSend_00002_arg_value
+0772  200D  	CALL serialSend_00002
+
+			if (Kpro >= 0) 	{serialSendDec(Kpro);}		
+0773  082D  	MOVF gbl_Kpro+D'1', W
+0774  3A80  	XORLW 0x80
+0775  00D2  	MOVWF CompTempVar135
+0776  3080  	MOVLW	0x80
+0777  0252  	SUBWF CompTempVar135, W
+0778  1D03  	BTFSS STATUS,Z
+0779  2F7C  	GOTO	label268436659
+077A  3000  	MOVLW	0x00
+077B  022C  	SUBWF gbl_Kpro, W
+077C        label268436659
+077C  1C03  	BTFSS STATUS,C
+077D  2F82  	GOTO	label268436660
+077E  082C  	MOVF gbl_Kpro, W
+077F  00D2  	MOVWF serialSend_00006_arg_n
+0780  2084  	CALL serialSend_00006
+0782        label268436660
+
+			else 				{serialSendChar(45);serialSendDec(-Kpro);}					
+0781  2F89  	GOTO	label268436667
+0782  302D  	MOVLW	0x2D
+0783  00D8  	MOVWF serialSend_00002_arg_value
+0784  200D  	CALL serialSend_00002
+0785  092C  	COMF gbl_Kpro, W
+0786  00D2  	MOVWF serialSend_00006_arg_n
+0787  0AD2  	INCF serialSend_00006_arg_n, F
+0788  2084  	CALL serialSend_00006
+0789        label268436667
+
+			serialSendChar(9);
+0789  3009  	MOVLW	0x09
+078A  00D8  	MOVWF serialSend_00002_arg_value
+078B  200D  	CALL serialSend_00002
+
+			if (Kdif >= 0) 	{serialSendDec(Kdif);}		
+078C  0831  	MOVF gbl_Kdif+D'1', W
+078D  3A80  	XORLW 0x80
+078E  00D2  	MOVWF CompTempVar136
+078F  3080  	MOVLW	0x80
+0790  0252  	SUBWF CompTempVar136, W
+0791  1D03  	BTFSS STATUS,Z
+0792  2F95  	GOTO	label268436683
+0793  3000  	MOVLW	0x00
+0794  0230  	SUBWF gbl_Kdif, W
+0795        label268436683
+0795  1C03  	BTFSS STATUS,C
+0796  2F9B  	GOTO	label268436684
+0797  0830  	MOVF gbl_Kdif, W
+0798  00D2  	MOVWF serialSend_00006_arg_n
+0799  2084  	CALL serialSend_00006
+079B        label268436684
+
+			else 				{serialSendChar(45);serialSendDec(-Kdif);}					
+079A  2FA2  	GOTO	label268436691
+079B  302D  	MOVLW	0x2D
+079C  00D8  	MOVWF serialSend_00002_arg_value
+079D  200D  	CALL serialSend_00002
+079E  0930  	COMF gbl_Kdif, W
+079F  00D2  	MOVWF serialSend_00006_arg_n
+07A0  0AD2  	INCF serialSend_00006_arg_n, F
+07A1  2084  	CALL serialSend_00006
+07A2        label268436691
+
+			serialSendChar(9);
+07A2  3009  	MOVLW	0x09
+07A3  00D8  	MOVWF serialSend_00002_arg_value
+07A4  200D  	CALL serialSend_00002
+
+			if (Kint >= 0) 	{serialSendDec(Kint);}		
+07A5  082F  	MOVF gbl_Kint+D'1', W
+07A6  3A80  	XORLW 0x80
+07A7  00D2  	MOVWF CompTempVar137
+07A8  3080  	MOVLW	0x80
+07A9  0252  	SUBWF CompTempVar137, W
+07AA  1D03  	BTFSS STATUS,Z
+07AB  2FAE  	GOTO	label268436707
+07AC  3000  	MOVLW	0x00
+07AD  022E  	SUBWF gbl_Kint, W
+07AE        label268436707
+07AE  1C03  	BTFSS STATUS,C
+07AF  2FB4  	GOTO	label268436708
+07B0  082E  	MOVF gbl_Kint, W
+07B1  00D2  	MOVWF serialSend_00006_arg_n
+07B2  2084  	CALL serialSend_00006
+07B4        label268436708
+
+			else 				{serialSendChar(45);serialSendDec(-Kint);}					
+07B3  2FBB  	GOTO	label268436715
+07B4  302D  	MOVLW	0x2D
+07B5  00D8  	MOVWF serialSend_00002_arg_value
+07B6  200D  	CALL serialSend_00002
+07B7  092E  	COMF gbl_Kint, W
+07B8  00D2  	MOVWF serialSend_00006_arg_n
+07B9  0AD2  	INCF serialSend_00006_arg_n, F
+07BA  2084  	CALL serialSend_00006
+07BB        label268436715
+
+			serialSendChar(9);
+07BB  3009  	MOVLW	0x09
+07BC  00D8  	MOVWF serialSend_00002_arg_value
+07BD  200D  	CALL serialSend_00002
+
+			if (Bias >= 0) 	{serialSendDec(Bias);}		
+07BE  083D  	MOVF gbl_Bias+D'1', W
+07BF  3A80  	XORLW 0x80
+07C0  00D2  	MOVWF CompTempVar138
+07C1  3080  	MOVLW	0x80
+07C2  0252  	SUBWF CompTempVar138, W
+07C3  1D03  	BTFSS STATUS,Z
+07C4  2FC7  	GOTO	label268436731
+07C5  3000  	MOVLW	0x00
+07C6  023C  	SUBWF gbl_Bias, W
+07C7        label268436731
+07C7  1C03  	BTFSS STATUS,C
+07C8  2FCD  	GOTO	label268436732
+07C9  083C  	MOVF gbl_Bias, W
+07CA  00D2  	MOVWF serialSend_00006_arg_n
+07CB  2084  	CALL serialSend_00006
+07CD        label268436732
+
+			else 				{serialSendChar(45);serialSendDec(-Bias);}					
+07CC  2FD4  	GOTO	label268436739
+07CD  302D  	MOVLW	0x2D
+07CE  00D8  	MOVWF serialSend_00002_arg_value
+07CF  200D  	CALL serialSend_00002
+07D0  093C  	COMF gbl_Bias, W
+07D1  00D2  	MOVWF serialSend_00006_arg_n
+07D2  0AD2  	INCF serialSend_00006_arg_n, F
+07D3  2084  	CALL serialSend_00006
+07D4        label268436739
+
+			serialSendChar(9);
+07D4  3009  	MOVLW	0x09
+07D5  00D8  	MOVWF serialSend_00002_arg_value
+07D6  200D  	CALL serialSend_00002
+
+			if (Kpause >= 0) 	{serialSendDec(Kpause);}		
+07D7  3000  	MOVLW	0x00
+07D8  0242  	SUBWF gbl_Kpause, W
+07D9  1C03  	BTFSS STATUS,C
+07DA  2FDF  	GOTO	label268436753
+07DB  0842  	MOVF gbl_Kpause, W
+07DC  00D2  	MOVWF serialSend_00006_arg_n
+07DD  2084  	CALL serialSend_00006
+07DF        label268436753
+
+			else 				{serialSendChar(45);serialSendDec(-Kpause);}					
+07DE  2FE6  	GOTO	label268436760
+07DF  302D  	MOVLW	0x2D
+07E0  00D8  	MOVWF serialSend_00002_arg_value
+07E1  200D  	CALL serialSend_00002
+07E2  0942  	COMF gbl_Kpause, W
+07E3  00D2  	MOVWF serialSend_00006_arg_n
+07E4  0AD2  	INCF serialSend_00006_arg_n, F
+07E5  2084  	CALL serialSend_00006
+07E6        label268436760
+
+			serialSendChar(13);
+07E6  300D  	MOVLW	0x0D
+07E7  00D8  	MOVWF serialSend_00002_arg_value
+07E8  200D  	CALL serialSend_00002
+
+		}
+		else delay_ms(20); //So in case info is transmitted or not, the time taken is the same.
+07E9  2FED  	GOTO	label268436774
+07EA  3014  	MOVLW	0x14
+07EB  00D2  	MOVWF delay_ms_00000_arg_del
+07EC  2003  	CALL delay_ms_00000
+07ED        label268436774
+
+       
+        //Check for commands from Serial Port
+        Command=serialReceiveChar();
+07ED  20B8  	CALL serialRece_00003
+07EE  0849  	MOVF CompTempVarRet0, W
+07EF  00C0  	MOVWF gbl_Command
+
+		switch (Command) 
+07F0  0840  	MOVF gbl_Command, W
+07F1  3A20  	XORLW 0x20
+07F2  158A  	BSF PCLATH,3
+07F3  1903  	BTFSC STATUS,Z
+07F4  2812  	GOTO	label268436782
+07F5  0840  	MOVF gbl_Command, W
+07F6  3A21  	XORLW 0x21
+07F7  1903  	BTFSC STATUS,Z
+07F8  2849  	GOTO	label268436784
+07F9  0840  	MOVF gbl_Command, W
+07FA  3A22  	XORLW 0x22
+07FB  1903  	BTFSC STATUS,Z
+07FC  2880  	GOTO	label268436786
+07FD  0840  	MOVF gbl_Command, W
+07FE  3A23  	XORLW 0x23
+07FF  1903  	BTFSC STATUS,Z
+0800  2892  	GOTO	label268436788
+0801  0840  	MOVF gbl_Command, W
+0802  3A24  	XORLW 0x24
+0803  1903  	BTFSC STATUS,Z
+0804  28A4  	GOTO	label268436790
+0805  0840  	MOVF gbl_Command, W
+0806  3A25  	XORLW 0x25
+0807  1903  	BTFSC STATUS,Z
+0808  28B6  	GOTO	label268436792
+0809  0840  	MOVF gbl_Command, W
+080A  3A26  	XORLW 0x26
+080B  1903  	BTFSC STATUS,Z
+080C  28C5  	GOTO	label268436794
+080D  0840  	MOVF gbl_Command, W
+080E  3A27  	XORLW 0x27
+080F  1903  	BTFSC STATUS,Z
+0810  28C7  	GOTO	label268436796
+0811  28C8  	GOTO	label268436797
+
+		{
+			case 32:	//Set Speed (" ")
+0812        label268436782
+
+				while((pir1 & 1 << RCIF) == 0); //wait for Value
+0812  1E8C  	BTFSS gbl_pir1,5
+0813  2812  	GOTO	label268436782
+
+				Value=serialReceiveChar();
+0814  118A  	BCF PCLATH,3
+0815  20B8  	CALL serialRece_00003
+0816  0849  	MOVF CompTempVarRet0, W
+0817  00C1  	MOVWF gbl_Value
+
+				SetPoint=((int)Value-50)*10;
+0818  01D6  	CLRF CompTempVar140
+0819  3032  	MOVLW	0x32
+081A  0241  	SUBWF gbl_Value, W
+081B  00D5  	MOVWF CompTempVar139
+081C  1C03  	BTFSS STATUS,C
+081D  03D6  	DECF CompTempVar140, F
+081E  01D8  	CLRF CompTempVar142
+081F  158A  	BSF PCLATH,3
+0820  2821  	GOTO	label268436817
+0821        label268436817
+0821  1FD5  	BTFSS CompTempVar139,7
+0822  2837  	GOTO	label268436822
+0823  0955  	COMF CompTempVar139, W
+0824  00D2  	MOVWF _mul_16_8_00000_arg_a
+0825  0956  	COMF CompTempVar140, W
+0826  00D3  	MOVWF _mul_16_8_00000_arg_a+D'1'
+0827  0AD2  	INCF _mul_16_8_00000_arg_a, F
+0828  1903  	BTFSC STATUS,Z
+0829  0AD3  	INCF _mul_16_8_00000_arg_a+D'1', F
+082A  300A  	MOVLW	0x0A
+082B  00D4  	MOVWF _mul_16_8_00000_arg_b
+082C  118A  	BCF PCLATH,3
+082D  22A3  	CALL _mul_16_8_00000
+082E  0949  	COMF CompTempVarRet0, W
+082F  00D7  	MOVWF CompTempVar141
+0830  094A  	COMF CompTempVarRet0+D'1', W
+0831  00D8  	MOVWF CompTempVar142
+0832  0AD7  	INCF CompTempVar141, F
+0833  1903  	BTFSC STATUS,Z
+0834  0AD8  	INCF CompTempVar142, F
+0835  158A  	BSF PCLATH,3
+0836  2843  	GOTO	label268436825
+0837        label268436822
+0837  0855  	MOVF CompTempVar139, W
+0838  00D2  	MOVWF _mul_16_8_00000_arg_a
+0839  0856  	MOVF CompTempVar140, W
+083A  00D3  	MOVWF _mul_16_8_00000_arg_a+D'1'
+083B  300A  	MOVLW	0x0A
+083C  00D4  	MOVWF _mul_16_8_00000_arg_b
+083D  118A  	BCF PCLATH,3
+083E  22A3  	CALL _mul_16_8_00000
+083F  0849  	MOVF CompTempVarRet0, W
+0840  00D7  	MOVWF CompTempVar141
+0841  084A  	MOVF CompTempVarRet0+D'1', W
+0842  00D8  	MOVWF CompTempVar142
+0843        label268436825
+0843  0857  	MOVF CompTempVar141, W
+0844  00A0  	MOVWF gbl_SetPoint
+0845  0858  	MOVF CompTempVar142, W
+0846  00A1  	MOVWF gbl_SetPoint+D'1'
+
+				break;
+0847  158A  	BSF PCLATH,3
+0848  28C8  	GOTO	label268436797
+
+			case 33:	//Set Bias ("!")
+0849        label268436784
+
+				while((pir1 & 1 << RCIF) == 0); //wait for Value
+0849  1E8C  	BTFSS gbl_pir1,5
+084A  2849  	GOTO	label268436784
+
+				Value=serialReceiveChar();
+084B  118A  	BCF PCLATH,3
+084C  20B8  	CALL serialRece_00003
+084D  0849  	MOVF CompTempVarRet0, W
+084E  00C1  	MOVWF gbl_Value
+
+				Bias=((int)Value-50)*10;
+084F  01D6  	CLRF CompTempVar144
+0850  3032  	MOVLW	0x32
+0851  0241  	SUBWF gbl_Value, W
+0852  00D5  	MOVWF CompTempVar143
+0853  1C03  	BTFSS STATUS,C
+0854  03D6  	DECF CompTempVar144, F
+0855  01D8  	CLRF CompTempVar146
+0856  158A  	BSF PCLATH,3
+0857  2858  	GOTO	label268436846
+0858        label268436846
+0858  1FD5  	BTFSS CompTempVar143,7
+0859  286E  	GOTO	label268436851
+085A  0955  	COMF CompTempVar143, W
+085B  00D2  	MOVWF _mul_16_8_00000_arg_a
+085C  0956  	COMF CompTempVar144, W
+085D  00D3  	MOVWF _mul_16_8_00000_arg_a+D'1'
+085E  0AD2  	INCF _mul_16_8_00000_arg_a, F
+085F  1903  	BTFSC STATUS,Z
+0860  0AD3  	INCF _mul_16_8_00000_arg_a+D'1', F
+0861  300A  	MOVLW	0x0A
+0862  00D4  	MOVWF _mul_16_8_00000_arg_b
+0863  118A  	BCF PCLATH,3
+0864  22A3  	CALL _mul_16_8_00000
+0865  0949  	COMF CompTempVarRet0, W
+0866  00D7  	MOVWF CompTempVar145
+0867  094A  	COMF CompTempVarRet0+D'1', W
+0868  00D8  	MOVWF CompTempVar146
+0869  0AD7  	INCF CompTempVar145, F
+086A  1903  	BTFSC STATUS,Z
+086B  0AD8  	INCF CompTempVar146, F
+086C  158A  	BSF PCLATH,3
+086D  287A  	GOTO	label268436854
+086E        label268436851
+086E  0855  	MOVF CompTempVar143, W
+086F  00D2  	MOVWF _mul_16_8_00000_arg_a
+0870  0856  	MOVF CompTempVar144, W
+0871  00D3  	MOVWF _mul_16_8_00000_arg_a+D'1'
+0872  300A  	MOVLW	0x0A
+0873  00D4  	MOVWF _mul_16_8_00000_arg_b
+0874  118A  	BCF PCLATH,3
+0875  22A3  	CALL _mul_16_8_00000
+0876  0849  	MOVF CompTempVarRet0, W
+0877  00D7  	MOVWF CompTempVar145
+0878  084A  	MOVF CompTempVarRet0+D'1', W
+0879  00D8  	MOVWF CompTempVar146
+087A        label268436854
+087A  0857  	MOVF CompTempVar145, W
+087B  00BC  	MOVWF gbl_Bias
+087C  0858  	MOVF CompTempVar146, W
+087D  00BD  	MOVWF gbl_Bias+D'1'
+
+				break;
+087E  158A  	BSF PCLATH,3
+087F  28C8  	GOTO	label268436797
+
+			case 34:	//Set Kpro (""")
+0880        label268436786
+
+				while((pir1 & 1 << RCIF) == 0); //wait for Value
+0880  1E8C  	BTFSS gbl_pir1,5
+0881  2880  	GOTO	label268436786
+
+				Value=serialReceiveChar();
+0882  118A  	BCF PCLATH,3
+0883  20B8  	CALL serialRece_00003
+0884  0849  	MOVF CompTempVarRet0, W
+0885  00C1  	MOVWF gbl_Value
+
+				Kpro=((int)Value-50);
+0886  01D3  	CLRF CompTempVar148
+0887  3032  	MOVLW	0x32
+0888  0241  	SUBWF gbl_Value, W
+0889  00D2  	MOVWF CompTempVar147
+088A  1C03  	BTFSS STATUS,C
+088B  03D3  	DECF CompTempVar148, F
+088C  0852  	MOVF CompTempVar147, W
+088D  00AC  	MOVWF gbl_Kpro
+088E  0853  	MOVF CompTempVar148, W
+088F  00AD  	MOVWF gbl_Kpro+D'1'
+
+				break;
+0890  158A  	BSF PCLATH,3
+0891  28C8  	GOTO	label268436797
+
+			case 35:	//Set Kint ("#")
+0892        label268436788
+
+				while((pir1 & 1 << RCIF) == 0); //wait for Value
+0892  1E8C  	BTFSS gbl_pir1,5
+0893  2892  	GOTO	label268436788
+
+				Value=serialReceiveChar();
+0894  118A  	BCF PCLATH,3
+0895  20B8  	CALL serialRece_00003
+0896  0849  	MOVF CompTempVarRet0, W
+0897  00C1  	MOVWF gbl_Value
+
+				Kint=((int)Value-50);
+0898  01D3  	CLRF CompTempVar150
+0899  3032  	MOVLW	0x32
+089A  0241  	SUBWF gbl_Value, W
+089B  00D2  	MOVWF CompTempVar149
+089C  1C03  	BTFSS STATUS,C
+089D  03D3  	DECF CompTempVar150, F
+089E  0852  	MOVF CompTempVar149, W
+089F  00AE  	MOVWF gbl_Kint
+08A0  0853  	MOVF CompTempVar150, W
+08A1  00AF  	MOVWF gbl_Kint+D'1'
+
+				break;
+08A2  158A  	BSF PCLATH,3
+08A3  28C8  	GOTO	label268436797
+
+			case 36:	//Set Kdif ("$")
+08A4        label268436790
+
+				while((pir1 & 1 << RCIF) == 0); //wait for Value
+08A4  1E8C  	BTFSS gbl_pir1,5
+08A5  28A4  	GOTO	label268436790
+
+				Value=serialReceiveChar();
+08A6  118A  	BCF PCLATH,3
+08A7  20B8  	CALL serialRece_00003
+08A8  0849  	MOVF CompTempVarRet0, W
+08A9  00C1  	MOVWF gbl_Value
+
+				Kdif=((int)Value-50);
+08AA  01D3  	CLRF CompTempVar152
+08AB  3032  	MOVLW	0x32
+08AC  0241  	SUBWF gbl_Value, W
+08AD  00D2  	MOVWF CompTempVar151
+08AE  1C03  	BTFSS STATUS,C
+08AF  03D3  	DECF CompTempVar152, F
+08B0  0852  	MOVF CompTempVar151, W
+08B1  00B0  	MOVWF gbl_Kdif
+08B2  0853  	MOVF CompTempVar152, W
+08B3  00B1  	MOVWF gbl_Kdif+D'1'
+
+				break;
+08B4  158A  	BSF PCLATH,3
+08B5  28C8  	GOTO	label268436797
+
+			case 37:	//Set Kpause ("%")
+08B6        label268436792
+
+				while((pir1 & 1 << RCIF) == 0); //wait for Value
+08B6  1E8C  	BTFSS gbl_pir1,5
+08B7  28B6  	GOTO	label268436792
+
+				Kpause=((int)Value-50);
+08B8  01D3  	CLRF CompTempVar154
+08B9  3032  	MOVLW	0x32
+08BA  0241  	SUBWF gbl_Value, W
+08BB  00D2  	MOVWF CompTempVar153
+08BC  1C03  	BTFSS STATUS,C
+08BD  03D3  	DECF CompTempVar154, F
+08BE  0852  	MOVF CompTempVar153, W
+08BF  00C2  	MOVWF gbl_Kpause
+
+				if (Kpause<0) Kpause=0;
+08C0  3000  	MOVLW	0x00
+08C1  0242  	SUBWF gbl_Kpause, W
+08C2  1C03  	BTFSS STATUS,C
+08C3  01C2  	CLRF gbl_Kpause
+
+				break;
+08C4  28C8  	GOTO	label268436797
+
+			case 38:	//Ask for feedback values to be sent via serial port ("&")
+08C5        label268436794
+
+				SendFeedback=1;
+08C5  1543  	BSF gbl_SendFeedback,2
+
+				break;
+08C6  28C8  	GOTO	label268436797
+
+			case 39:	//Ask to stop sending feedback values ("'")
+08C7        label268436796
+
+				SendFeedback=0;
+08C7  1143  	BCF gbl_SendFeedback,2
+
+				break;
+			default:
+08C8        label268436797
+
+				;
+		}
+    }
+}
+
+
+
+// Code to work with Serial Port (by Yann Hendrikx).
+
+#include "serial.h"
+
+
+void serialInit(char rateScaler)
+
+{
+	set_bit(trisc, 7 );			//RC7/RX as input
+00C2  1683  	BSF STATUS, RP0
+00C3  1787  	BSF gbl_trisc,7
+
+	clear_bit(trisc, 6 );		//RC6/TX as output
+00C4  1307  	BCF gbl_trisc,6
+
+    spbrg = rateScaler;         //baud rate init
+00C5  1283  	BCF STATUS, RP0
+00C6  084B  	MOVF serialInit_00000_arg_rateScaler, W
+00C7  1683  	BSF STATUS, RP0
+00C8  0099  	MOVWF gbl_spbrg
+
+    txsta = 00100100b;          //8 bits, transmit enabled, Async, HighSpeed
+00C9  3024  	MOVLW	0x24
+00CA  0098  	MOVWF gbl_txsta
+
+    rcsta = 10010000b;          //serial port enable, receive enabled
+00CB  3090  	MOVLW	0x90
+00CC  1283  	BCF STATUS, RP0
+00CD  0098  	MOVWF gbl_rcsta
+
+}
+00CE  0008  	RETURN
+
+
+void serialSendChar(char value)
+
+{
+    while((txsta & 1 << TRMT) == 0);                                 // TRMT is better then TXIF
+000D        label268437023
+000D  1683  	BSF STATUS, RP0
+000E  1C98  	BTFSS gbl_txsta,1
+000F  280D  	GOTO	label268437023
+
+    txreg = value;
+0010  1283  	BCF STATUS, RP0
+0011  0858  	MOVF serialSend_00002_arg_value, W
+0012  0099  	MOVWF gbl_txreg
+
+}
+0013  0008  	RETURN
+
+
+char serialReceiveChar()
+
+{
+	if((pir1 & 1 << RCIF) == 0) 
+00B8  1283  	BCF STATUS, RP0
+00B9  1303  	BCF STATUS, RP1
+00BA  1A8C  	BTFSC gbl_pir1,5
+00BB  28BF  	GOTO	label268437028
+00BF        label268437028
+
+		return 255;
+00BC  30FF  	MOVLW	0xFF
+00BD  00C9  	MOVWF CompTempVarRet0
+
+    return rcreg;
+00BF  081A  	MOVF gbl_rcreg, W
+00C0  00C9  	MOVWF CompTempVarRet0
+
+}
+00BE  0008  	RETURN
+00C1  0008  	RETURN
+
+
+void serialSendString(const char* text)
+{
+    char i = 0;
+    while(text[i] != 0)
+        serialSendChar(text[i++]);
+}
+
+void serialSendDec(char n)
+
+{
+    if(n > 99)
+0084  0852  	MOVF serialSend_00006_arg_n, W
+0085  3C63  	SUBLW 0x63
+0086  1803  	BTFSC STATUS,C
+0087  2898  	GOTO	label268437072
+0098        label268437072
+
+        serialSendChar(((n / 100) % 10) + '0');
+0088  0852  	MOVF serialSend_00006_arg_n, W
+0089  00D3  	MOVWF _div_8_8_00000_arg_a
+008A  3064  	MOVLW	0x64
+008B  00D4  	MOVWF _div_8_8_00000_arg_b
+008C  2028  	CALL _div_8_8_00000
+008D  0849  	MOVF CompTempVarRet0, W
+008E  00D5  	MOVWF _rem_8_8_00000_arg_a
+008F  300A  	MOVLW	0x0A
+0090  00D6  	MOVWF _rem_8_8_00000_arg_b
+0091  2014  	CALL _rem_8_8_00000
+0092  0849  	MOVF CompTempVarRet0, W
+0093  00D9  	MOVWF CompTempVar159
+0094  3030  	MOVLW	0x30
+0095  0759  	ADDWF CompTempVar159, W
+0096  00D8  	MOVWF serialSend_00002_arg_value
+0097  200D  	CALL serialSend_00002
+
+    if(n > 9)
+0098  0852  	MOVF serialSend_00006_arg_n, W
+0099  3C09  	SUBLW 0x09
+009A  1803  	BTFSC STATUS,C
+009B  28AC  	GOTO	label268437088
+00AC        label268437088
+
+        serialSendChar(((n / 10) % 10) + '0');
+009C  0852  	MOVF serialSend_00006_arg_n, W
+009D  00D3  	MOVWF _div_8_8_00000_arg_a
+009E  300A  	MOVLW	0x0A
+009F  00D4  	MOVWF _div_8_8_00000_arg_b
+00A0  2028  	CALL _div_8_8_00000
+00A1  0849  	MOVF CompTempVarRet0, W
+00A2  00D5  	MOVWF _rem_8_8_00000_arg_a
+00A3  300A  	MOVLW	0x0A
+00A4  00D6  	MOVWF _rem_8_8_00000_arg_b
+00A5  2014  	CALL _rem_8_8_00000
+00A6  0849  	MOVF CompTempVarRet0, W
+00A7  00D9  	MOVWF CompTempVar161
+00A8  3030  	MOVLW	0x30
+00A9  0759  	ADDWF CompTempVar161, W
+00AA  00D8  	MOVWF serialSend_00002_arg_value
+00AB  200D  	CALL serialSend_00002
+
+    serialSendChar((n % 10) + '0');
+00AC  0852  	MOVF serialSend_00006_arg_n, W
+00AD  00D5  	MOVWF _rem_8_8_00000_arg_a
+00AE  300A  	MOVLW	0x0A
+00AF  00D6  	MOVWF _rem_8_8_00000_arg_b
+00B0  2014  	CALL _rem_8_8_00000
+00B1  0849  	MOVF CompTempVarRet0, W
+00B2  00D4  	MOVWF CompTempVar163
+00B3  3030  	MOVLW	0x30
+00B4  0754  	ADDWF CompTempVar163, W
+00B5  00D8  	MOVWF serialSend_00002_arg_value
+00B6  200D  	CALL serialSend_00002
+
+}
+00B7  0008  	RETURN
+
+
+void serialSendHex(char n)
+{
+    char hexChar;
+    char i;
+    for(i = 0; i < 2; i++)
+    {
+        if(i == 0)
+            hexChar = n >> 4;
+        else
+            hexChar = n & 0x0F;
+        if(hexChar < 10)
+            hexChar = hexChar + '0';
+        else
+            hexChar = hexChar + ('A' - 10);
+        serialSendChar(hexChar);
+    }
+}
+
+void serialSendBin(char n)
+{
+    char i;
+    for(i = 0; i < 8; i++)
+    {
+        if(n & 10000000b)
+                serialSendChar('1');
+        else
+                serialSendChar('0');
+        n <<= 1;
+    }
+}
+
+
+////////////////////////////////////////
+// Code with no source :-)
+////////////////////////////////////////
+0000  158A  	BSF PCLATH,3
+0001  28CA  	GOTO	_startup
+0003        delay_ms_00000
+; { delay_ms ; function begin
+0003  08D2  	MOVF delay_ms_00000_arg_del, F
+0004  1903  	BTFSC STATUS,Z
+0005  0008  	RETURN
+0006        label4026531856
+0006  30F9  	MOVLW	0xF9
+0007        label4026531857
+0007  3EFF  	ADDLW 0xFF
+0008  1D03  	BTFSS STATUS,Z
+0009  2807  	GOTO	label4026531857
+000A  0BD2  	DECFSZ delay_ms_00000_arg_del, F
+000B  2806  	GOTO	label4026531856
+000C  0008  	RETURN
+; } delay_ms function end
+
+
+0014        _rem_8_8_00000
+; { _rem_8_8 ; function begin
+0014  01DB  	CLRF _rem_8_8_00000_1_r
+0015  01DA  	CLRF _rem_8_8_00000_1_c
+0016  01DC  	CLRF _rem_8_8_00000_1_i
+0017        label268435536
+0017  19DC  	BTFSC _rem_8_8_00000_1_i,3
+0018  2825  	GOTO	label268435537
+0019  1003  	BCF STATUS,C
+001A  0DDA  	RLF _rem_8_8_00000_1_c, F
+001B  0DD5  	RLF _rem_8_8_00000_arg_a, F
+001C  0DDB  	RLF _rem_8_8_00000_1_r, F
+001D  0856  	MOVF _rem_8_8_00000_arg_b, W
+001E  025B  	SUBWF _rem_8_8_00000_1_r, W
+001F  1C03  	BTFSS STATUS,C
+0020  2823  	GOTO	label268435540
+0021  00DB  	MOVWF _rem_8_8_00000_1_r
+0022  145A  	BSF _rem_8_8_00000_1_c,0
+0023        label268435540
+0023  0ADC  	INCF _rem_8_8_00000_1_i, F
+0024  2817  	GOTO	label268435536
+0025        label268435537
+0025  085B  	MOVF _rem_8_8_00000_1_r, W
+0026  00C9  	MOVWF CompTempVarRet0
+0027  0008  	RETURN
+; } _rem_8_8 function end
+
+0028        _div_8_8_00000
+; { _div_8_8 ; function begin
+0028  01DB  	CLRF _div_8_8_00000_1_r
+0029  01DA  	CLRF _div_8_8_00000_1_c
+002A  01DC  	CLRF _div_8_8_00000_1_i
+002B        label268435516
+002B  19DC  	BTFSC _div_8_8_00000_1_i,3
+002C  2839  	GOTO	label268435517
+002D  1003  	BCF STATUS,C
+002E  0DDA  	RLF _div_8_8_00000_1_c, F
+002F  0DD3  	RLF _div_8_8_00000_arg_a, F
+0030  0DDB  	RLF _div_8_8_00000_1_r, F
+0031  0854  	MOVF _div_8_8_00000_arg_b, W
+0032  025B  	SUBWF _div_8_8_00000_1_r, W
+0033  1C03  	BTFSS STATUS,C
+0034  2837  	GOTO	label268435520
+0035  00DB  	MOVWF _div_8_8_00000_1_r
+0036  145A  	BSF _div_8_8_00000_1_c,0
+0037        label268435520
+0037  0ADC  	INCF _div_8_8_00000_1_i, F
+0038  282B  	GOTO	label268435516
+0039        label268435517
+0039  085A  	MOVF _div_8_8_00000_1_c, W
+003A  00C9  	MOVWF CompTempVarRet0
+003B  0008  	RETURN
+; } _div_8_8 function end
+
+003C        _rem_16_16_00000
+; { _rem_16_16 ; function begin
+003C  01E5  	CLRF _rem_16_16_00000_1_r+D'1'
+003D  01E4  	CLRF _rem_16_16_00000_1_r
+003E  01E3  	CLRF _rem_16_16_00000_1_c+D'1'
+003F  01E2  	CLRF _rem_16_16_00000_1_c
+0040  01E6  	CLRF _rem_16_16_00000_1_i
+0041        label268435493
+0041  1A66  	BTFSC _rem_16_16_00000_1_i,4
+0042  285B  	GOTO	label268435494
+0043  1003  	BCF STATUS,C
+0044  0DE2  	RLF _rem_16_16_00000_1_c, F
+0045  0DE3  	RLF _rem_16_16_00000_1_c+D'1', F
+0046  0DD8  	RLF _rem_16_16_00000_arg_a, F
+0047  0DD9  	RLF _rem_16_16_00000_arg_a+D'1', F
+0048  0DE4  	RLF _rem_16_16_00000_1_r, F
+0049  0DE5  	RLF _rem_16_16_00000_1_r+D'1', F
+004A  085B  	MOVF _rem_16_16_00000_arg_b+D'1', W
+004B  0265  	SUBWF _rem_16_16_00000_1_r+D'1', W
+004C  1D03  	BTFSS STATUS,Z
+004D  2850  	GOTO	label268435497
+004E  085A  	MOVF _rem_16_16_00000_arg_b, W
+004F  0264  	SUBWF _rem_16_16_00000_1_r, W
+0050        label268435497
+0050  1C03  	BTFSS STATUS,C
+0051  2859  	GOTO	label268435498
+0052  085A  	MOVF _rem_16_16_00000_arg_b, W
+0053  02E4  	SUBWF _rem_16_16_00000_1_r, F
+0054  085B  	MOVF _rem_16_16_00000_arg_b+D'1', W
+0055  1C03  	BTFSS STATUS,C
+0056  03E5  	DECF _rem_16_16_00000_1_r+D'1', F
+0057  02E5  	SUBWF _rem_16_16_00000_1_r+D'1', F
+0058  1462  	BSF _rem_16_16_00000_1_c,0
+0059        label268435498
+0059  0AE6  	INCF _rem_16_16_00000_1_i, F
+005A  2841  	GOTO	label268435493
+005B        label268435494
+005B  0864  	MOVF _rem_16_16_00000_1_r, W
+005C  00C9  	MOVWF CompTempVarRet0
+005D  0865  	MOVF _rem_16_16_00000_1_r+D'1', W
+005E  00CA  	MOVWF CompTempVarRet0+D'1'
+005F  0008  	RETURN
+; } _rem_16_16 function end
+
+0060        _div_16_16_00000
+; { _div_16_16 ; function begin
+0060  01E9  	CLRF _div_16_16_00000_1_r+D'1'
+0061  01E8  	CLRF _div_16_16_00000_1_r
+0062  01E7  	CLRF _div_16_16_00000_1_c+D'1'
+0063  01E6  	CLRF _div_16_16_00000_1_c
+0064  01EA  	CLRF _div_16_16_00000_1_i
+0065        label268435470
+0065  1A6A  	BTFSC _div_16_16_00000_1_i,4
+0066  287F  	GOTO	label268435471
+0067  1003  	BCF STATUS,C
+0068  0DE6  	RLF _div_16_16_00000_1_c, F
+0069  0DE7  	RLF _div_16_16_00000_1_c+D'1', F
+006A  0DE0  	RLF _div_16_16_00000_arg_a, F
+006B  0DE1  	RLF _div_16_16_00000_arg_a+D'1', F
+006C  0DE8  	RLF _div_16_16_00000_1_r, F
+006D  0DE9  	RLF _div_16_16_00000_1_r+D'1', F
+006E  0863  	MOVF _div_16_16_00000_arg_b+D'1', W
+006F  0269  	SUBWF _div_16_16_00000_1_r+D'1', W
+0070  1D03  	BTFSS STATUS,Z
+0071  2874  	GOTO	label268435474
+0072  0862  	MOVF _div_16_16_00000_arg_b, W
+0073  0268  	SUBWF _div_16_16_00000_1_r, W
+0074        label268435474
+0074  1C03  	BTFSS STATUS,C
+0075  287D  	GOTO	label268435475
+0076  0862  	MOVF _div_16_16_00000_arg_b, W
+0077  02E8  	SUBWF _div_16_16_00000_1_r, F
+0078  0863  	MOVF _div_16_16_00000_arg_b+D'1', W
+0079  1C03  	BTFSS STATUS,C
+007A  03E9  	DECF _div_16_16_00000_1_r+D'1', F
+007B  02E9  	SUBWF _div_16_16_00000_1_r+D'1', F
+007C  1466  	BSF _div_16_16_00000_1_c,0
+007D        label268435475
+007D  0AEA  	INCF _div_16_16_00000_1_i, F
+007E  2865  	GOTO	label268435470
+007F        label268435471
+007F  0866  	MOVF _div_16_16_00000_1_c, W
+0080  00C9  	MOVWF CompTempVarRet0
+0081  0867  	MOVF _div_16_16_00000_1_c+D'1', W
+0082  00CA  	MOVWF CompTempVarRet0+D'1'
+0083  0008  	RETURN
+; } _div_16_16 function end
+
+
+026A        _mul_16_16_00000
+; { _mul_16_16 ; function begin
+026A  01DC  	CLRF _mul_16_16_00000_1_i
+026B  01DE  	CLRF _mul_16_16_00000_1_c+D'1'
+026C  01DD  	CLRF _mul_16_16_00000_1_c
+026D  0852  	MOVF _mul_16_16_00000_arg_a, W
+026E  00DF  	MOVWF _mul_16_16_00000_1_t
+026F  0853  	MOVF _mul_16_16_00000_arg_a+D'1', W
+0270  00E0  	MOVWF _mul_16_16_00000_1_t+D'1'
+0271        label268435747
+0271  1A5C  	BTFSC _mul_16_16_00000_1_i,4
+0272  2A82  	GOTO	label268435748
+0273  1C54  	BTFSS _mul_16_16_00000_arg_b,0
+0274  2A7B  	GOTO	label268435749
+0275  085F  	MOVF _mul_16_16_00000_1_t, W
+0276  07DD  	ADDWF _mul_16_16_00000_1_c, F
+0277  1803  	BTFSC STATUS,C
+0278  0ADE  	INCF _mul_16_16_00000_1_c+D'1', F
+0279  0860  	MOVF _mul_16_16_00000_1_t+D'1', W
+027A  07DE  	ADDWF _mul_16_16_00000_1_c+D'1', F
+027B        label268435749
+027B  0CD5  	RRF _mul_16_16_00000_arg_b+D'1', F
+027C  0CD4  	RRF _mul_16_16_00000_arg_b, F
+027D  1003  	BCF STATUS,C
+027E  0DDF  	RLF _mul_16_16_00000_1_t, F
+027F  0DE0  	RLF _mul_16_16_00000_1_t+D'1', F
+0280  0ADC  	INCF _mul_16_16_00000_1_i, F
+0281  2A71  	GOTO	label268435747
+0282        label268435748
+0282  085D  	MOVF _mul_16_16_00000_1_c, W
+0283  00C9  	MOVWF CompTempVarRet0
+0284  085E  	MOVF _mul_16_16_00000_1_c+D'1', W
+0285  00CA  	MOVWF CompTempVarRet0+D'1'
+0286  0008  	RETURN
+; } _mul_16_16 function end
+
+0287        _mul_8_16_00000
+; { _mul_8_16 ; function begin
+0287  01D4  	CLRF _mul_8_16_00000_1_i
+0288  01D6  	CLRF _mul_8_16_00000_1_c+D'1'
+0289  01D5  	CLRF _mul_8_16_00000_1_c
+028A  084C  	MOVF _mul_8_16_00000_arg_b, W
+028B  00D7  	MOVWF _mul_8_16_00000_1_t
+028C  084D  	MOVF _mul_8_16_00000_arg_b+D'1', W
+028D  00D8  	MOVWF _mul_8_16_00000_1_t+D'1'
+028E        label268435737
+028E  19D4  	BTFSC _mul_8_16_00000_1_i,3
+028F  2A9E  	GOTO	label268435738
+0290  1C4B  	BTFSS _mul_8_16_00000_arg_a,0
+0291  2A98  	GOTO	label268435739
+0292  0857  	MOVF _mul_8_16_00000_1_t, W
+0293  07D5  	ADDWF _mul_8_16_00000_1_c, F
+0294  1803  	BTFSC STATUS,C
+0295  0AD6  	INCF _mul_8_16_00000_1_c+D'1', F
+0296  0858  	MOVF _mul_8_16_00000_1_t+D'1', W
+0297  07D6  	ADDWF _mul_8_16_00000_1_c+D'1', F
+0298        label268435739
+0298  0CCB  	RRF _mul_8_16_00000_arg_a, F
+0299  1003  	BCF STATUS,C
+029A  0DD7  	RLF _mul_8_16_00000_1_t, F
+029B  0DD8  	RLF _mul_8_16_00000_1_t+D'1', F
+029C  0AD4  	INCF _mul_8_16_00000_1_i, F
+029D  2A8E  	GOTO	label268435737
+029E        label268435738
+029E  0855  	MOVF _mul_8_16_00000_1_c, W
+029F  00C9  	MOVWF CompTempVarRet0
+02A0  0856  	MOVF _mul_8_16_00000_1_c+D'1', W
+02A1  00CA  	MOVWF CompTempVarRet0+D'1'
+02A2  0008  	RETURN
+; } _mul_8_16 function end
+
+02A3        _mul_16_8_00000
+; { _mul_16_8 ; function begin
+02A3  01D9  	CLRF _mul_16_8_00000_1_i
+02A4  01DB  	CLRF _mul_16_8_00000_1_c+D'1'
+02A5  01DA  	CLRF _mul_16_8_00000_1_c
+02A6  0852  	MOVF _mul_16_8_00000_arg_a, W
+02A7  00DC  	MOVWF _mul_16_8_00000_1_t
+02A8  0853  	MOVF _mul_16_8_00000_arg_a+D'1', W
+02A9  00DD  	MOVWF _mul_16_8_00000_1_t+D'1'
+02AA        label268435727
+02AA  19D9  	BTFSC _mul_16_8_00000_1_i,3
+02AB  2ABA  	GOTO	label268435728
+02AC  1C54  	BTFSS _mul_16_8_00000_arg_b,0
+02AD  2AB4  	GOTO	label268435729
+02AE  085C  	MOVF _mul_16_8_00000_1_t, W
+02AF  07DA  	ADDWF _mul_16_8_00000_1_c, F
+02B0  1803  	BTFSC STATUS,C
+02B1  0ADB  	INCF _mul_16_8_00000_1_c+D'1', F
+02B2  085D  	MOVF _mul_16_8_00000_1_t+D'1', W
+02B3  07DB  	ADDWF _mul_16_8_00000_1_c+D'1', F
+02B4        label268435729
+02B4  0CD4  	RRF _mul_16_8_00000_arg_b, F
+02B5  1003  	BCF STATUS,C
+02B6  0DDC  	RLF _mul_16_8_00000_1_t, F
+02B7  0DDD  	RLF _mul_16_8_00000_1_t+D'1', F
+02B8  0AD9  	INCF _mul_16_8_00000_1_i, F
+02B9  2AAA  	GOTO	label268435727
+02BA        label268435728
+02BA  085A  	MOVF _mul_16_8_00000_1_c, W
+02BB  00C9  	MOVWF CompTempVarRet0
+02BC  085B  	MOVF _mul_16_8_00000_1_c+D'1', W
+02BD  00CA  	MOVWF CompTempVarRet0+D'1'
+02BE  0008  	RETURN
+; } _mul_16_8 function end
+
+
+08CA        _startup
+
+08ED  30D5  	MOVLW	0xD5
+08EE  00C5  	MOVWF gbl_5_LSR
+08EF  30C4  	MOVLW	0xC4
+08F0  00C6  	MOVWF gbl_5_LSR+D'1'
+08F1  30BB  	MOVLW	0xBB
+08F2  00C7  	MOVWF gbl_5_LSR+D'2'
+08F3  30DC  	MOVLW	0xDC
+08F4  00C8  	MOVWF gbl_5_LSR+D'3'
+08F5  118A  	BCF PCLATH,3
+08F6  2ABF  	GOTO	main
+
+2007  3F79  	DW 0x3F79

@@ -1,0 +1,17 @@
+// SourceBoost Linker Function Resource Useage Dump
+
+Global:"global",line = 0,ram = 42.3,rom = 0;
+_div_16_16:"div.c",line = 18,ram = 6.0,rom = 36;
+_rem_16_16:"div.c",line = 47,ram = 6.0,rom = 36;
+_div_8_8:"div.c",line = 78,ram = 4.0,rom = 20;
+_rem_8_8:"div.c",line = 108,ram = 4.0,rom = 20;
+_mul_16_8:"mul.c",line = 82,ram = 5.0,rom = 28;
+_mul_8_16:"mul.c",line = 112,ram = 5.0,rom = 28;
+_mul_16_16:"mul.c",line = 142,ram = 5.0,rom = 29;
+SetPWM:"motor.c",line = 80,ram = 16.0,rom = 411;
+main:"motor.c",line = 125,ram = 17.0,rom = 1547;
+serialInit:"serial.c",line = 8,ram = 0.0,rom = 13;
+serialSendChar:"serial.c",line = 17,ram = 0.0,rom = 7;
+serialReceiveChar:"serial.c",line = 23,ram = 0.0,rom = 10;
+serialSendDec:"serial.c",line = 37,ram = 7.0,rom = 52;
+delay_ms:"NoSourceFile",line = 0,ram = 0.0,rom = 10;
