@@ -298,13 +298,7 @@ mentioned theories.</p>
     </td>
     <td width="95%">PID Without a PhD (Easy guide to PID control algorithms and
       gains tuning)  :
-      <a href="http://www.embedded.com/2000/0010/0010feat3.htm" target="_blank"> http://www.embedded.com/2000/0010/0010feat3.htm</a>&nbsp;
-    </td>
-  </tr>
-  <tr>
-    <td width="5%" valign="top">
-    </td>
-    <td width="95%">Adjusting PID Gains: <a href="http://www.ctc-control.com/customer/elearning/servotut/adjus.asp" target="_blank"> http://www.ctc-control.com/customer/elearning/servotut/adjus.asp</a>
+      <a href="PID-without-PhD.pdf" target="_blank"> PID-without-PhD.pdf</a>&nbsp;
     </td>
   </tr>
   <tr>
